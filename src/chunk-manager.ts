@@ -1,65 +1,29 @@
-interface MainChunk {
-    id: string;
-    index: number;
-    start: number;
-    end: number;
-    size: number;
-    subChunks: SubChunk[];
-    status: 'pending' | 'sending' | 'completed' | 'failed';
-    checksum: string | null;
-    data: ArrayBuffer | null;
-}
-
-interface SubChunk {
-    id: string;
-    mainChunkId: string;
-    start: number;
-    end: number;
-    size: number;
-    status: 'pending' | 'sending' | 'completed' | 'failed';
-    data: ArrayBuffer | null;
-}
-
-interface Progress {
-    percent: number;
-    bytesCompleted: number;
-    totalBytes: number;
-    mainChunksCompleted: number;
-    totalMainChunks: number;
-    chunksCompleted: number;
-    totalChunks: number;
-    failedChunks: number;
-}
-
 /**
  * 階層チャンクマネージャー
  * 100GBファイル転送用の高度なチャンク管理システム
  */
+import type { MainChunk, SubChunk } from './types.js';
+
 class ChunkManager {
-    public fileName: string;
-    public fileSize: number;
-    public totalMainChunks: number = 0;
-
-    private MAIN_CHUNK_SIZE = 50 * 1024 * 1024; // 50MB
-    private SUB_CHUNK_SIZE = 1 * 1024 * 1024;    // 1MB
-
+    public file: File;
+    public MAIN_CHUNK_SIZE: number = 50 * 1024 * 1024; // 50MB
+    public SUB_CHUNK_SIZE: number = 1 * 1024 * 1024;    // 1MB
     public mainChunks: MainChunk[] = [];
-    private completedSubChunks = new Set<string>();
-    private failedSubChunks = new Set<string>();
+    public completedSubChunks: Set<string> = new Set();
+    public failedSubChunks: Set<string> = new Set();
+    public startTime: number = 0;
 
-    constructor(fileName: string, fileSize: number) {
-        this.fileName = fileName;
-        this.fileSize = fileSize;
+    constructor(file: File) {
+        this.file = file;
         this.init();
     }
 
     /**
      * チャンク初期化
      */
-    private init(): void {
-        const totalSize = this.fileSize;
+    init(): void {
+        const totalSize = this.file.size;
         const mainChunkCount = Math.ceil(totalSize / this.MAIN_CHUNK_SIZE);
-        this.totalMainChunks = mainChunkCount;
 
         console.log(`📁 ファイル解析: ${this.formatFileSize(totalSize)}`);
         console.log(`📦 メインチャンク数: ${mainChunkCount} (50MB each)`);
@@ -77,9 +41,8 @@ class ChunkManager {
                 end: end,
                 size: end - start,
                 subChunks: [],
-                status: 'pending',
-                checksum: null,
-                data: null
+                status: 'pending' as const,
+                checksum: null
             };
 
             // サブチャンク作成
@@ -89,13 +52,15 @@ class ChunkManager {
                 const subEnd = Math.min(subStart + this.SUB_CHUNK_SIZE, end);
 
                 const subChunk: SubChunk = {
-                    id: `sub_${i}_${j}`,
+                    id: `${mainChunk.id}_sub_${j}`,
                     mainChunkId: mainChunk.id,
+                    index: j,
                     start: subStart,
                     end: subEnd,
                     size: subEnd - subStart,
-                    status: 'pending',
-                    data: null
+                    status: 'pending' as const,
+                    checksum: null,
+                    retryCount: 0
                 };
 
                 mainChunk.subChunks.push(subChunk);
@@ -106,179 +71,159 @@ class ChunkManager {
     }
 
     /**
-     * メインチャンク作成（ファイルデータから）
+     * 次の送信するメインチャンクを取得
      */
-    public createMainChunks(fileData: ArrayBuffer): void {
-        console.log('📦 メインチャンク作成開始');
-
-        for (const mainChunk of this.mainChunks) {
-            const start = mainChunk.start;
-            const end = mainChunk.end;
-            mainChunk.data = fileData.slice(start, end);
-
-            console.log(`📦 メインチャンク ${mainChunk.id}: ${this.formatFileSize(mainChunk.size)}`);
-        }
-
-        console.log(`✅ メインチャンク作成完了: ${this.mainChunks.length}個`);
+    getNextMainChunk(): MainChunk | null {
+        return this.mainChunks.find(chunk => chunk.status === 'pending') || null;
     }
 
     /**
-     * メインチャンクID取得
+     * メインチャンクのサブチャンクを取得
      */
-    public getMainChunkIds(): string[] {
-        return this.mainChunks.map(mc => mc.id);
-    }
-
-    /**
-     * サブチャンク取得
-     */
-    public getSubChunks(mainChunkId: string): SubChunk[] {
-        const mainChunk = this.mainChunks.find(mc => mc.id === mainChunkId);
+    getSubChunks(mainChunkId: string): SubChunk[] {
+        const mainChunk = this.mainChunks.find(chunk => chunk.id === mainChunkId);
         return mainChunk ? mainChunk.subChunks : [];
     }
 
     /**
-     * サブチャンク受信
+     * 次の送信するサブチャンクを取得
      */
-    public receiveSubChunk(mainChunkId: string, subChunkId: string, data: ArrayBuffer): void {
-        const mainChunk = this.mainChunks.find(mc => mc.id === mainChunkId);
-        if (!mainChunk) return;
+    getNextSubChunk(mainChunkId: string): SubChunk | null {
+        const subChunks = this.getSubChunks(mainChunkId);
+        return subChunks.find(chunk => chunk.status === 'pending' && !this.failedSubChunks.has(chunk.id)) || null;
+    }
 
-        const subChunk = mainChunk.subChunks.find(sc => sc.id === subChunkId);
-        if (!subChunk) return;
+    /**
+     * サブチャンク完了を記録
+     */
+    markSubChunkCompleted(subChunkId: string, checksum: string): void {
+        this.completedSubChunks.add(subChunkId);
+        this.failedSubChunks.delete(subChunkId);
 
-        subChunk.data = data;
-        subChunk.status = 'completed';
-
-        const key = `${mainChunkId}-${subChunkId}`;
-        this.completedSubChunks.add(key);
-        this.failedSubChunks.delete(key);
+        // サブチャンクを更新
+        for (const mainChunk of this.mainChunks) {
+            const subChunk = mainChunk.subChunks.find(sc => sc.id === subChunkId);
+            if (subChunk) {
+                subChunk.status = 'completed';
+                subChunk.checksum = checksum;
+                break;
+            }
+        }
 
         // メインチャンクの完了チェック
-        this.checkMainChunkCompletion(mainChunk);
+        this.updateMainChunkStatus();
     }
 
     /**
-     * サブチャンク完了マーク
+     * サブチャンク失敗を記録
      */
-    public markSubChunkCompleted(mainChunkId: string, subChunkId: string): void {
-        const mainChunk = this.mainChunks.find(mc => mc.id === mainChunkId);
-        if (!mainChunk) return;
+    markSubChunkFailed(subChunkId: string): void {
+        this.failedSubChunks.add(subChunkId);
 
-        const subChunk = mainChunk.subChunks.find(sc => sc.id === subChunkId);
-        if (!subChunk) return;
-
-        subChunk.status = 'completed';
-        const key = `${mainChunkId}-${subChunkId}`;
-        this.completedSubChunks.add(key);
-        this.failedSubChunks.delete(key);
-
-        this.checkMainChunkCompletion(mainChunk);
-    }
-
-    /**
-     * メインチャンク完了チェック
-     */
-    private checkMainChunkCompletion(mainChunk: MainChunk): void {
-        const allSubChunksCompleted = mainChunk.subChunks.every(sc => sc.status === 'completed');
-
-        if (allSubChunksCompleted) {
-            mainChunk.status = 'completed';
-
-            // メインチャンクデータ組み立て
-            const subChunksSorted = mainChunk.subChunks.sort((a, b) => a.start - b.start);
-            const totalSize = subChunksSorted.reduce((sum, sc) => sum + sc.size, 0);
-            const combinedData = new Uint8Array(totalSize);
-
-            let offset = 0;
-            for (const subChunk of subChunksSorted) {
-                if (subChunk.data) {
-                    combinedData.set(new Uint8Array(subChunk.data), offset);
-                    offset += subChunk.size;
-                }
+        const subChunk = this.findSubChunk(subChunkId);
+        if (subChunk) {
+            subChunk.retryCount++;
+            if (subChunk.retryCount > 3) {
+                subChunk.status = 'failed';
+                console.error(`❌ サブチャンク ${subChunkId} が3回失敗しました`);
             }
-
-            mainChunk.data = combinedData.buffer;
-            mainChunk.checksum = this.calculateChecksum(mainChunk.data);
-
-            console.log(`✅ メインチャンク ${mainChunk.id} 完了`);
         }
     }
 
     /**
-     * 進捗取得
+     * メインチャンクのステータスを更新
      */
-    public getProgress(): Progress {
-        const totalSubChunks = this.mainChunks.reduce((sum, mc) => sum + mc.subChunks.length, 0);
+    updateMainChunkStatus() {
+        for (const mainChunk of this.mainChunks) {
+            const completedSubs = mainChunk.subChunks.filter(sc => sc.status === 'completed').length;
+            const totalSubs = mainChunk.subChunks.length;
+
+            if (completedSubs === totalSubs && totalSubs > 0) {
+                mainChunk.status = 'completed';
+                console.log(`✅ メインチャンク ${mainChunk.id} 完了 (${completedSubs}/${totalSubs})`);
+            } else if (completedSubs > 0) {
+                mainChunk.status = 'sending';
+            }
+        }
+    }
+
+    /**
+     * 転送進捗を取得
+     */
+    getProgress() {
+        const totalSubChunks = this.mainChunks.reduce((sum, chunk) => sum + chunk.subChunks.length, 0);
         const completedSubChunks = this.completedSubChunks.size;
-        const completedMainChunks = this.mainChunks.filter(mc => mc.status === 'completed').length;
 
-        const bytesCompleted = this.mainChunks.reduce((sum, mc) => {
-            if (mc.status === 'completed') return sum + mc.size;
-
-            const mcBytesCompleted = mc.subChunks
-                .filter(sc => sc.status === 'completed')
-                .reduce((sum, sc) => sum + sc.size, 0);
-            return sum + mcBytesCompleted;
+        const totalBytes = this.file.size;
+        const completedBytes = this.mainChunks.reduce((sum, chunk) => {
+            const completedSubs = chunk.subChunks.filter(sc => sc.status === 'completed');
+            return sum + completedSubs.reduce((subSum, sub) => subSum + sub.size, 0);
         }, 0);
 
-        const percent = this.fileSize > 0 ? (bytesCompleted / this.fileSize) * 100 : 0;
-
         return {
-            percent,
-            bytesCompleted,
-            totalBytes: this.fileSize,
-            mainChunksCompleted: completedMainChunks,
-            totalMainChunks: this.mainChunks.length,
+            percentage: (completedSubChunks / totalSubChunks) * 100,
+            bytesCompleted: completedBytes,
+            totalBytes: totalBytes,
             chunksCompleted: completedSubChunks,
             totalChunks: totalSubChunks,
-            failedChunks: this.failedSubChunks.size
+            mainChunksCompleted: this.mainChunks.filter(c => c.status === 'completed').length,
+            totalMainChunks: this.mainChunks.length
         };
     }
 
     /**
-     * 完全なファイルデータ取得
+     * 転送が完了したかチェック
      */
-    public getAssembledFile(): ArrayBuffer | null {
-        const allMainChunksCompleted = this.mainChunks.every(mc => mc.status === 'completed');
-
-        if (!allMainChunksCompleted) {
-            console.warn('⚠️  全てのメインチャンクが完了していません');
-            return null;
-        }
-
-        // メインチャンクを正しい順序で結合
-        const sortedMainChunks = this.mainChunks.sort((a, b) => a.start - b.start);
-        const totalSize = sortedMainChunks.reduce((sum, mc) => sum + mc.size, 0);
-        const fileData = new Uint8Array(totalSize);
-
-        let offset = 0;
-        for (const mainChunk of sortedMainChunks) {
-            if (mainChunk.data) {
-                fileData.set(new Uint8Array(mainChunk.data), offset);
-                offset += mainChunk.size;
-            }
-        }
-
-        // チェックサム検証
-        const actualChecksum = this.calculateChecksum(fileData.buffer);
-        console.log(`🔍 ファイルチェックサム: ${actualChecksum}`);
-
-        return fileData.buffer;
+    isCompleted() {
+        return this.mainChunks.every(chunk => chunk.status === 'completed');
     }
 
     /**
-     * チェックサム計算
+     * 失敗したサブチャンクの再送リストを取得
      */
-    private calculateChecksum(data: ArrayBuffer): string {
-        const hash = new Uint8Array(data).reduce((acc, val) => acc + val, 0);
-        return hash.toString(16).padStart(8, '0');
+    getRetryList() {
+        const retryList = [];
+        for (const mainChunk of this.mainChunks) {
+            const failedSubs = mainChunk.subChunks.filter(sc =>
+                this.failedSubChunks.has(sc.id) && sc.retryCount <= 3
+            );
+            retryList.push(...failedSubs);
+        }
+        return retryList;
     }
 
     /**
-     * ファイルサイズ整形
+     * サブチャンクを検索
      */
-    private formatFileSize(bytes: number): string {
+    findSubChunk(subChunkId: string): SubChunk | null {
+        for (const mainChunk of this.mainChunks) {
+            const subChunk = mainChunk.subChunks.find(sc => sc.id === subChunkId);
+            if (subChunk) return subChunk;
+        }
+        return null;
+    }
+
+    /**
+     * チャンクデータを取得（ArrayBuffer形式）
+     */
+    async getChunkData(chunk: SubChunk): Promise<ArrayBuffer> {
+        const fileSlice = this.file.slice(chunk.start, chunk.end);
+        return await fileSlice.arrayBuffer();
+    }
+
+    /**
+     * SHA-256チェックサムを計算
+     */
+    async calculateChecksum(buffer: ArrayBuffer): Promise<string> {
+        const hashBuffer = await crypto.subtle.digest('SHA-256', buffer);
+        const hashArray = Array.from(new Uint8Array(hashBuffer));
+        return hashArray.map(b => b.toString(16).padStart(2, '0')).join('');
+    }
+
+    /**
+     * ファイルサイズを整形
+     */
+    formatFileSize(bytes: number): string {
         if (bytes === 0) return '0 Bytes';
         const k = 1024;
         const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
@@ -287,64 +232,48 @@ class ChunkManager {
     }
 
     /**
-     * 再送試行
+     * 転送統計情報を取得
      */
-    public retryFailedChunks(): void {
-        const failedChunks = Array.from(this.failedSubChunks);
-
-        for (const chunkKey of failedChunks) {
-            const [mainChunkId, subChunkId] = chunkKey.split('-');
-
-            const mainChunk = this.mainChunks.find(mc => mc.id === mainChunkId);
-            if (!mainChunk) continue;
-
-            const subChunk = mainChunk.subChunks.find(sc => sc.id === subChunkId);
-            if (!subChunk) continue;
-
-            subChunk.status = 'pending';
-            this.failedSubChunks.delete(chunkKey);
-
-            console.log(`🔄 再送準備: ${chunkKey}`);
-        }
-    }
-
-    /**
-     * 統計情報取得
-     */
-    public getStats(): any {
+    getStats() {
         const progress = this.getProgress();
+        const failedChunks = this.getRetryList().length;
+
         return {
-            ...progress,
-            fileName: this.fileName,
-            totalMainChunks: this.totalMainChunks,
-            retryQueue: this.failedSubChunks.size,
-            memoryUsage: this.estimateMemoryUsage()
+            fileName: this.file.name,
+            fileSize: this.formatFileSize(this.file.size),
+            progress: progress,
+            chunksCompleted: progress.chunksCompleted,
+            totalChunks: progress.totalChunks,
+            mainChunksCompleted: progress.mainChunksCompleted,
+            totalMainChunks: progress.totalMainChunks,
+            failedChunks: failedChunks,
+            estimatedTimeRemaining: this.calculateETA(progress)
         };
     }
 
     /**
-     * メモリ使用量推定
+     * 推定残り時間を計算
      */
-    private estimateMemoryUsage(): number {
-        let totalBytes = 0;
+    calculateETA(progress: { percentage: number }): string {
+        // 簡易的なETA計算（実際には転送速度の履歴から計算する方が良い）
+        if (progress.percentage === 0) return '計算中...';
 
-        for (const mainChunk of this.mainChunks) {
-            if (mainChunk.data) {
-                totalBytes += mainChunk.size;
-            }
+        const remainingPercentage = 100 - progress.percentage;
+        const estimatedSeconds = (remainingPercentage / progress.percentage) *
+                                  (Date.now() - this.startTime) / 1000;
 
-            for (const subChunk of mainChunk.subChunks) {
-                if (subChunk.data) {
-                    totalBytes += subChunk.size;
-                }
-            }
-        }
+        if (estimatedSeconds < 60) return `${Math.round(estimatedSeconds)}秒`;
+        if (estimatedSeconds < 3600) return `${Math.round(estimatedSeconds / 60)}分`;
+        return `${Math.round(estimatedSeconds / 3600)}時間`;
+    }
 
-        return totalBytes;
+    /**
+     * 転送開始時間を記録
+     */
+    startTransfer(): void {
+        this.startTime = Date.now();
     }
 }
 
-// グローバル登録
+// グローバルエクスポート
 (window as any).ChunkManager = ChunkManager;
-
-export default ChunkManager;
