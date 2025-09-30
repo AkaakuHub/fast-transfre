@@ -4,17 +4,9 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "npx tsx app.ts",
-    "server": "npx tsx server.ts",
-    "dev": "concurrently \"npm run build:watch\" \"npm run start-ws\" \"npm run start-http\"",
-    "start-ws": "node dist/server.js",
-    "start-http": "node dist/app.js",
-    "build": "tsc",
-    "build:watch": "tsc --watch",
-    "vite:dev": "vite",
-    "vite:build": "vite build",
-    "vite:preview": "vite preview",
-    "test": "echo \"Error: no test specified\" && exit 1"
+    "frontend": "vite",
+    "backend": "npx tsx server.ts",
+    "start": "concurrently \"npm run frontend\" \"npm run backend\""
   },
   "keywords": [],
   "author": "",

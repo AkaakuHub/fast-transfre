@@ -7,7 +7,15 @@ const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
 const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
-    let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url || '');
+    let filePath;
+
+    if (req.url?.startsWith('/dist/')) {
+        // dist/ディレクトリのJavaScriptファイルを配信
+        filePath = path.join(__dirname, req.url);
+    } else {
+        // public/ディレクトリのファイルを配信
+        filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url || '');
+    }
 
     const extname = path.extname(filePath);
     let contentType = 'text/html';
