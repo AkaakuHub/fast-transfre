@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fast Transfer - クライアント側</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+            padding: 40px;
+            text-align: center;
+            max-width: 450px;
+            width: 90%;
+        }
+
+        .title {
+            font-size: 2.5rem;
+            color: #333;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 1.1rem;
+        }
+
+        .input-group {
+            margin: 20px 0;
+        }
+
+        label {
+            display: block;
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 10px;
+            text-align: left;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 15px;
+            font-size: 1.5rem;
+            border: 2px solid #e0e0e0;
+            border-radius: 10px;
+            text-align: center;
+            letter-spacing: 8px;
+            transition: all 0.3s ease;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+            box-shadow: 0 0 0 3px rgba(102, 126, 234, 0.1);
+        }
+
+        .file-drop-area {
+            border: 3px dashed #e0e0e0;
+            border-radius: 15px;
+            padding: 40px;
+            margin: 20px 0;
+            transition: all 0.3s ease;
+            cursor: pointer;
+        }
+
+        .file-drop-area:hover,
+        .file-drop-area.drag-over {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        .file-icon {
+            font-size: 3rem;
+            margin-bottom: 10px;
+        }
+
+        .file-text {
+            color: #666;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+
+        .file-input {
+            display: none;
+        }
+
+        .btn {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            border-radius: 10px;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+        }
+
+        .btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+            box-shadow: none;
+        }
+
+        .selected-file {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            display: none;
+        }
+
+        .selected-file-name {
+            font-weight: bold;
+            color: #333;
+            margin-bottom: 5px;
+        }
+
+        .selected-file-size {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .status {
+            font-size: 1.1rem;
+            color: #555;
+            margin: 20px 0;
+        }
+
+        .connecting {
+            color: #ff6b6b;
+        }
+
+        .connected {
+            color: #51cf66;
+        }
+
+        .progress-bar {
+            background: #f0f0f0;
+            border-radius: 10px;
+            height: 20px;
+            overflow: hidden;
+            margin: 20px 0;
+            display: none;
+        }
+
+        .progress-fill {
+            background: linear-gradient(90deg, #4facfe 0%, #00f2fe 100%);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+
+        .error {
+            background: #ffe4e1;
+            color: #ff6b6b;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">📤 Fast Transfer</h1>
+        <p class="subtitle">クライアント側 - ファイル送信</p>
+
+        <div class="input-group">
+            <label for="roomCode">🔑 ルームコードを入力</label>
+            <input type="text" id="roomCode" maxlength="4" placeholder="0000">
+        </div>
+
+        <div class="file-drop-area" id="dropArea" style="display: none;">
+            <div class="file-icon">📁</div>
+            <div class="file-text">ファイルをドラッグ&ドロップ</div>
+            <div class="file-text">または</div>
+            <button class="btn" type="button" id="selectFileBtn">ファイルを選択</button>
+            <input type="file" id="fileInput" class="file-input" multiple>
+        </div>
+
+        <div class="selected-file" id="selectedFile">
+            <div class="selected-file-name" id="fileName"></div>
+            <div class="selected-file-size" id="fileSize"></div>
+        </div>
+
+        <button class="btn" id="sendBtn" style="display: none;">📤 送信開始</button>
+
+        <div class="status" id="status">
+            <span class="connecting">⏳ ルームコードを入力してファイルを選択してください</span>
+        </div>
+
+        <div class="progress-bar" id="progressBar">
+            <div class="progress-fill" id="progressFill"></div>
+        </div>
+
+        <div class="error" id="error"></div>
+    </div>
+
+    <script src="webrtc.js"></script>
+    <script src="client.js"></script>
+</body>
+</html>

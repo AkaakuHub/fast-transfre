@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Fast Transfer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            margin: 0;
+            padding: 0;
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .container {
+            background: white;
+            border-radius: 20px;
+            box-shadow: 0 20px 60px rgba(0,0,0,0.2);
+            padding: 40px;
+            text-align: center;
+            max-width: 500px;
+            width: 90%;
+        }
+
+        .title {
+            font-size: 3rem;
+            color: #333;
+            margin-bottom: 10px;
+            font-weight: 700;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 40px;
+            font-size: 1.2rem;
+        }
+
+        .mode-selector {
+            display: flex;
+            gap: 20px;
+            margin-bottom: 30px;
+        }
+
+        .mode-btn {
+            flex: 1;
+            padding: 20px;
+            border: 2px solid #e0e0e0;
+            background: white;
+            border-radius: 15px;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            font-size: 1.1rem;
+            font-weight: 600;
+        }
+
+        .mode-btn:hover {
+            border-color: #667eea;
+            background: rgba(102, 126, 234, 0.05);
+        }
+
+        .mode-btn.active {
+            border-color: #667eea;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+
+        .mode-icon {
+            font-size: 2rem;
+            margin-bottom: 10px;
+        }
+
+        .description {
+            color: #666;
+            font-size: 1rem;
+            margin-bottom: 30px;
+            line-height: 1.6;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 class="title">🚀 Fast Transfer</h1>
+        <p class="subtitle">ローカルネットワーク高速ファイル転送</p>
+
+        <div class="mode-selector">
+            <button class="mode-btn" id="serverBtn" onclick="goToServer()">
+                <div class="mode-icon">📁</div>
+                <div>サーバー側</div>
+                <div style="font-size: 0.8rem; margin-top: 5px;">ファイル受信</div>
+            </button>
+
+            <button class="mode-btn" id="clientBtn" onclick="goToClient()">
+                <div class="mode-icon">📤</div>
+                <div>クライアント側</div>
+                <div style="font-size: 0.8rem; margin-top: 5px;">ファイル送信</div>
+            </button>
+        </div>
+
+        <div class="description">
+            <p><strong>サーバー側:</strong> 4桁のコードを表示してファイルを受信</p>
+            <p><strong>クライアント側:</strong> コードを入力してファイルを送信</p>
+            <p style="margin-top: 20px; color: #999; font-size: 0.9rem;">
+                WebRTC P2P通信でLAN内の直接転送を実現
+            </p>
+        </div>
+    </div>
+
+    <script>
+        function goToServer() {
+            window.location.href = 'server.html';
+        }
+
+        function goToClient() {
+            window.location.href = 'client.html';
+        }
+
+        // ボタンアニメーション
+        document.getElementById('serverBtn').addEventListener('mouseenter', function() {
+            this.style.transform = 'translateY(-2px)';
+        });
+
+        document.getElementById('serverBtn').addEventListener('mouseleave', function() {
+            this.style.transform = 'translateY(0)';
+        });
+
+        document.getElementById('clientBtn').addEventListener('mouseenter', function() {
+            this.style.transform = 'translateY(-2px)';
+        });
+
+        document.getElementById('clientBtn').addEventListener('mouseleave', function() {
+            this.style.transform = 'translateY(0)';
+        });
+    </script>
+</body>
+</html>
