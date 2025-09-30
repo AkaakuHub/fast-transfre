@@ -141,6 +141,7 @@ class WebRTCManagerV2 {
     public onProgress: ((progress: number) => void) | null = null;
     public onStatusChange: ((state: string, message: string) => void) | null = null;
     public onFileReceived: ((fileInfo: FileInfo) => void) | null = null;
+    public onFileReceiveStart: ((filename: string, filesize: number) => void) | null = null;
     public onStatsUpdate: ((stats: TransferStats) => void) | null = null;
     public onConnected: (() => void) | null = null;
     public onDisconnected: (() => void) | null = null;
@@ -600,6 +601,11 @@ class WebRTCManagerV2 {
         this.receiveStartTime = Date.now();
         this.lastBytesReceived = 0;
         this.lastProgressUpdate = Date.now();
+
+        // ファイル受信開始を通知
+        if (this.onFileReceiveStart) {
+            this.onFileReceiveStart(data.filename, data.filesize);
+        }
 
         // 初期統計を送信
         this.updateProgress(0);

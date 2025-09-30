@@ -4,39 +4,9 @@
  * 100GB対応・階層チャンク受信の実装
  */
 
-import type { FileInfo, TransferStats, ControlMessage } from './types.js';
+import type { FileInfo, TransferStats, ControlMessage, WebRTCManagerV2 } from './types.js';
 
 declare global {
-    interface WebRTCManagerV2 {
-        pc: RTCPeerConnection | null;
-        dataChannel: RTCDataChannel | null;
-        receiveManager: {
-            filename: string;
-            filesize: number;
-            totalMainChunks: number;
-            totalSubChunks: number;
-            completedChunks: Set<string>;
-            receivedChunks: Map<string, ArrayBuffer>;
-            totalReceived: number;
-        } | null;
-        maxConcurrentSends: number;
-        BUFFER_THRESHOLD: number;
-        adaptiveChunkSize: number;
-
-        onStatusChange: ((state: string, message: string) => void) | null;
-        onProgress: ((progress: number) => void) | null;
-        onStatsUpdate: ((stats: TransferStats) => void) | null;
-        onFileReceived: ((fileInfo: FileInfo) => void) | null;
-        sendToServer: ((data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => void) | null;
-
-        init(isHost: boolean): void;
-        createOffer(): Promise<RTCSessionDescriptionInit>;
-        createAnswer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit>;
-        setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
-        addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
-        sendFile(file: File): Promise<void>;
-    }
-
     var WebRTCManagerV2: {
         new(): WebRTCManagerV2;
     };
@@ -246,6 +216,19 @@ class ServerManagerV2 {
             this.handleFileReceived(fileData);
         };
 
+        // ファイル受信開始イベント
+        this.webrtc.onFileReceiveStart = (filename: string, filesize: number) => {
+            this.updateCurrentFileInfo(filename, filesize);
+        };
+
+        // クリア受信ファイルボタン
+        const clearReceivedBtn = document.getElementById('clearReceivedBtn') as HTMLButtonElement;
+        if (clearReceivedBtn) {
+            clearReceivedBtn.addEventListener('click', () => {
+                this.clearReceivedFiles();
+            });
+        }
+
         // サーバー送信メソッド設定
         this.webrtc.sendToServer = (data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => {
             // WebRTCのメッセージはシグナリングサーバーに転送しない
@@ -324,34 +307,66 @@ class ServerManagerV2 {
         this.downloadFile(fileData);
     }
 
+    // 現在受信中のファイル情報更新
+    private updateCurrentFileInfo(filename: string, filesize: number): void {
+        const fileInfo = document.getElementById('fileInfo') as HTMLElement;
+        const fileName = document.getElementById('fileName') as HTMLElement;
+        const fileSize = document.getElementById('fileSize') as HTMLElement;
+
+        if (fileInfo) fileInfo.style.display = 'block';
+        if (fileName) fileName.textContent = `📄 ${filename}`;
+        if (fileSize) fileSize.textContent = `📏 ${this.formatFileSize(filesize)}`;
+    }
+
     // 受信ファイルリスト更新
     private updateReceivedFilesList(): void {
         const fileList = document.getElementById('receivedFilesList') as HTMLElement;
         const filesListContainer = document.getElementById('filesListContainer') as HTMLElement;
+        const clearReceivedBtn = document.getElementById('clearReceivedBtn') as HTMLElement;
 
         if (!fileList || !filesListContainer) return;
 
         fileList.innerHTML = '';
 
+        console.log('📋 受信ファイルリスト更新:', this.receivedFiles.length, 'ファイル');
+        console.log('📋 receivedFiles配列の中身:', JSON.stringify(this.receivedFiles, null, 2));
+
         this.receivedFiles.forEach((file, index) => {
+            console.log(`📄 ファイル ${index}:`, {
+                name: file.name,
+                size: file.size,
+                nameType: typeof file.name,
+                nameLength: file.name.length
+            });
             const fileItem = document.createElement('div');
             fileItem.className = 'file-item';
             fileItem.innerHTML = `
-                <div class="file-info">
-                    <span class="file-name">${file.name}</span>
-                    <span class="file-size">${this.formatFileSize(file.size)}</span>
+                <div class="received-file-info">
+                    <div class="received-file-name" style="font-weight: 600; color: #333; margin-bottom: 4px; word-break: break-all;" title="${file.name}">${file.name}</div>
+                    <div class="received-file-size" style="color: #666; font-size: 0.9rem;">${this.formatFileSize(file.size)}</div>
                 </div>
-                <div class="file-status">
-                    <span class="status-indicator completed">✅ 受信完了</span>
+                <div class="received-file-status">
+                    <span style="color: #28a745; font-size: 0.9rem; font-weight: 500;">✅ 受信完了</span>
                 </div>
             `;
             fileList.appendChild(fileItem);
         });
 
-        // ファイルがある場合はリストコンテナを表示
+        // ファイルがある場合はコンテナとクリアボタンを表示
         if (this.receivedFiles.length > 0) {
             filesListContainer.style.display = 'block';
+            if (clearReceivedBtn) clearReceivedBtn.style.display = 'inline-block';
+        } else {
+            filesListContainer.style.display = 'none';
+            if (clearReceivedBtn) clearReceivedBtn.style.display = 'none';
         }
+    }
+
+    // 受信ファイルリストをクリア
+    private clearReceivedFiles(): void {
+        this.receivedFiles = [];
+        this.updateReceivedFilesList();
+        console.log('🗑️ 受信ファイルリストをクリアしました');
     }
 
     // ファイルダウンロード

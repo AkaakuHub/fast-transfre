@@ -3,30 +3,9 @@
  * 100GB対応・階層チャンク転送の実装
  */
 
-import type { FileInfo, TransferStats, ControlMessage } from './types.js';
+import type { FileInfo, TransferStats, ControlMessage, WebRTCManagerV2 } from './types.js';
 
 declare global {
-    interface WebRTCManagerV2 {
-        pc: RTCPeerConnection | null;
-        dataChannel: RTCDataChannel | null;
-        chunkManager: any;
-        maxConcurrentSends: number;
-        BUFFER_THRESHOLD: number;
-        adaptiveChunkSize: number;
-
-        onStatusChange: ((state: string, message: string) => void) | null;
-        onProgress: ((progress: number) => void) | null;
-        onStatsUpdate: ((stats: TransferStats) => void) | null;
-        onConnected: (() => void) | null;
-        onDisconnected: (() => void) | null;
-        sendToServer: ((data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => void) | null;
-
-        init(isHost: boolean): void;
-        createAnswer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit>;
-        addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
-        sendFile(file: File): Promise<void>;
-    }
-
     var WebRTCManagerV2: {
         new(): WebRTCManagerV2;
     };
@@ -35,6 +14,7 @@ class ClientManagerV2 {
     private ws: WebSocket | null = null;
     private roomCode: string | null = null;
     private selectedFiles: File[] = [];
+    private completedFiles: FileInfo[] = [];
     private webrtc: WebRTCManagerV2;
 
     // 転送統計
@@ -191,6 +171,60 @@ class ClientManagerV2 {
         }
     }
 
+    // 完了ファイルに移動
+    moveToCompleted(file: File): void {
+        const fileInfo: FileInfo = {
+            name: file.name,
+            size: file.size,
+            data: new ArrayBuffer(0) // 送信側ではデータは不要
+        };
+
+        this.completedFiles.push(fileInfo);
+        this.displayCompletedFiles();
+    }
+
+    // 完了ファイル表示
+    displayCompletedFiles(): void {
+        const completedFilesList = document.getElementById('completedFilesList') as HTMLElement;
+        const completedFilesContainer = document.getElementById('completedFilesContainer') as HTMLElement;
+        const clearCompletedBtn = document.getElementById('clearCompletedBtn') as HTMLElement;
+
+        if (!completedFilesList || !completedFilesContainer) return;
+
+        completedFilesList.innerHTML = '';
+
+        this.completedFiles.forEach((file, index) => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${this.formatFileSize(file.size)}</span>
+                </div>
+                <div class="file-status">
+                    <span class="status-indicator completed">✅ 送信完了</span>
+                </div>
+            `;
+            completedFilesList.appendChild(fileItem);
+        });
+
+        // 完了ファイルがある場合はコンテナとクリアボタンを表示
+        if (this.completedFiles.length > 0) {
+            completedFilesContainer.style.display = 'block';
+            if (clearCompletedBtn) clearCompletedBtn.style.display = 'inline-block';
+        } else {
+            completedFilesContainer.style.display = 'none';
+            if (clearCompletedBtn) clearCompletedBtn.style.display = 'none';
+        }
+    }
+
+    // 完了ファイルをクリア
+    clearCompletedFiles(): void {
+        this.completedFiles = [];
+        this.displayCompletedFiles();
+        console.log('🗑️ 送信完了ファイルリストをクリアしました');
+    }
+
     // 選択ファイル表示
     displaySelectedFiles(): void {
         const selectedFilesList = document.getElementById('selectedFilesList') as HTMLElement;
@@ -270,23 +304,33 @@ class ClientManagerV2 {
         this.applySettings();
 
         try {
-            for (let i = 0; i < this.selectedFiles.length; i++) {
-                const file = this.selectedFiles[i];
+            let currentIndex = 0;
+            while (this.selectedFiles.length > 0) {
+                const file = this.selectedFiles[0]; // 最初のファイルを送信
                 this.transferStartTime = Date.now();
                 this.lastBytesTransferred = 0;
                 this.lastProgressUpdate = Date.now();
 
-                this.updateStatus('sending', `🚀 ${file.name} をV2転送中... (${i + 1}/${this.selectedFiles.length})`);
+                const totalFiles = this.selectedFiles.length + this.completedFiles.length;
+                this.updateStatus('sending', `🚀 ${file.name} をV2転送中... (${this.completedFiles.length + 1}/${totalFiles})`);
 
                 await this.webrtc.sendFile(file);
+
+                // 送信完了後、選択リストから削除して完了リストに移動
+                this.moveToCompleted(file);
+                this.selectedFiles.shift(); // 最初の要素を削除
+                this.displaySelectedFiles();
+                this.updateSendButton();
 
                 this.updateStatus('completed', `✅ ${file.name} V2転送完了！`);
 
                 // ファイル間に少し待機時間を入れてDataChannelを安定させる
-                if (i < this.selectedFiles.length - 1) {
+                if (this.selectedFiles.length > 0) {
                     console.log('⏳ 次のファイル送信前に待機...');
                     await new Promise(resolve => setTimeout(resolve, 1000));
                 }
+
+                currentIndex++;
             }
         } catch (error: unknown) {
             console.error('ファイル送信エラー:', error);
@@ -295,6 +339,11 @@ class ClientManagerV2 {
         } finally {
             sendBtn.disabled = false;
             sendBtn.textContent = '🚀 高速送信開始';
+
+            // すべてのファイル送信完了
+            if (this.selectedFiles.length === 0 && this.completedFiles.length > 0) {
+                this.updateStatus('all-completed', `🎉 全${this.completedFiles.length}ファイルの送信が完了しました！`);
+            }
         }
     }
 
@@ -388,6 +437,14 @@ class ClientManagerV2 {
                     advancedSettings.style.display = 'none';
                     advancedToggle.textContent = '⚙️ 詳細設定';
                 }
+            });
+        }
+
+        // クリア完了ファイルボタン
+        const clearCompletedBtn = document.getElementById('clearCompletedBtn') as HTMLButtonElement;
+        if (clearCompletedBtn) {
+            clearCompletedBtn.addEventListener('click', () => {
+                this.clearCompletedFiles();
             });
         }
 

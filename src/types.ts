@@ -115,6 +115,32 @@ export interface ChunkManager {
     };
 }
 
+export interface WebRTCManagerV2 {
+    pc: RTCPeerConnection | null;
+    dataChannel: RTCDataChannel | null;
+    chunkManager: any;
+    receiveManager: any;
+    maxConcurrentSends: number;
+    BUFFER_THRESHOLD: number;
+    adaptiveChunkSize: number;
+
+    onStatusChange: ((state: string, message: string) => void) | null;
+    onProgress: ((progress: number) => void) | null;
+    onStatsUpdate: ((stats: TransferStats) => void) | null;
+    onFileReceived: ((fileInfo: FileInfo) => void) | null;
+    onFileReceiveStart: ((filename: string, filesize: number) => void) | null;
+    onConnected: (() => void) | null;
+    onDisconnected: (() => void) | null;
+    sendToServer: ((data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => void) | null;
+
+    init(isHost: boolean): void;
+    createOffer(): Promise<RTCSessionDescriptionInit>;
+    createAnswer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit>;
+    setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
+    addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
+    sendFile(file: File): Promise<void>;
+}
+
 declare global {
     interface Window {
         WebRTCManagerV2: any;

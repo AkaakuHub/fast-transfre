@@ -250,6 +250,16 @@
             color: #333;
             margin-bottom: 4px;
             word-break: break-all;
+            max-width: 300px;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            white-space: nowrap;
+        }
+
+        .file-name:hover {
+            white-space: normal;
+            overflow: visible;
+            text-overflow: initial;
         }
 
         .file-size {
@@ -292,6 +302,21 @@
         .remove-file-btn:hover {
             background: #c82333;
         }
+
+        .clear-received-btn {
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background-color 0.2s;
+        }
+
+        .clear-received-btn:hover {
+            background: #5a6268;
+        }
     </style>
 </head>
 <body>
@@ -316,7 +341,10 @@
         </div>
 
         <div class="files-list-container" id="filesListContainer" style="display: none;">
-            <h3>📁 受信ファイル一覧</h3>
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3>📁 受信したファイル</h3>
+                <button class="clear-received-btn" id="clearReceivedBtn" style="display: none;">クリア</button>
+            </div>
             <div class="files-list" id="receivedFilesList"></div>
         </div>
 

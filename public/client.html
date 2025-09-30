@@ -327,6 +327,10 @@
             color: #28a745;
         }
 
+        .status-indicator.sending {
+            color: #007bff;
+        }
+
         .file-actions {
             margin-left: 15px;
         }
@@ -348,6 +352,21 @@
 
         .remove-file-btn:hover {
             background: #c82333;
+        }
+
+        .clear-completed-btn {
+            background: #6c757d;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            padding: 6px 12px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background-color 0.2s;
+        }
+
+        .clear-completed-btn:hover {
+            background: #5a6268;
         }
     </style>
 </head>
@@ -378,6 +397,14 @@
         <div class="files-list-container" id="selectedFilesContainer" style="display: none;">
             <h3>📁 選択ファイル一覧</h3>
             <div class="files-list" id="selectedFilesList"></div>
+        </div>
+
+        <div class="files-list-container" id="completedFilesContainer" style="display: none;">
+            <div style="display: flex; justify-content: space-between; align-items: center;">
+                <h3>✅ 送信完了ファイル</h3>
+                <button class="clear-completed-btn" id="clearCompletedBtn" style="display: none;">クリア</button>
+            </div>
+            <div class="files-list" id="completedFilesList"></div>
         </div>
 
         <button class="btn" id="sendBtn" style="display: none;">🚀 高速送信開始</button>
