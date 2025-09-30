@@ -1,42 +1,36 @@
-export {};
-
-interface FileStats {
-  mainChunksCompleted?: number;
-  totalMainChunks?: number;
-  chunksCompleted?: number;
-  totalChunks?: number;
-  failedChunks?: number;
-  bytesCompleted?: number;
-}
-
-interface WebRTCManagerV2 {
-  maxConcurrentSends: number;
-  BUFFER_THRESHOLD: number;
-  adaptiveChunkSize: number;
-  pc: RTCPeerConnection | null;
-  chunkManager: any;
-  onStatusChange: (state: string, message: string) => void;
-  onProgress: (progress: number) => void;
-  onStatsUpdate: (stats: FileStats) => void;
-  onConnected: () => void;
-  onDisconnected: () => void;
-  sendToServer: (data: any) => void;
-  init: (isHost: boolean) => void;
-  createAnswer: (offer: RTCSessionDescriptionInit) => Promise<RTCSessionDescriptionInit>;
-  addIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>;
-  sendFile: (file: File) => Promise<void>;
-}
-
-declare global {
-  interface Window {
-    WebRTCManagerV2: any;
-  }
-}
-
 /**
  * Fast Transfer V2 クライアントマネージャー
  * 100GB対応・階層チャンク転送の実装
  */
+
+import type { FileInfo, TransferStats, ControlMessage } from './types.js';
+
+declare global {
+    interface WebRTCManagerV2 {
+        pc: RTCPeerConnection | null;
+        dataChannel: RTCDataChannel | null;
+        chunkManager: any;
+        maxConcurrentSends: number;
+        BUFFER_THRESHOLD: number;
+        adaptiveChunkSize: number;
+
+        onStatusChange: ((state: string, message: string) => void) | null;
+        onProgress: ((progress: number) => void) | null;
+        onStatsUpdate: ((stats: TransferStats) => void) | null;
+        onConnected: (() => void) | null;
+        onDisconnected: (() => void) | null;
+        sendToServer: ((data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => void) | null;
+
+        init(isHost: boolean): void;
+        createAnswer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit>;
+        addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
+        sendFile(file: File): Promise<void>;
+    }
+
+    var WebRTCManagerV2: {
+        new(): WebRTCManagerV2;
+    };
+}
 class ClientManagerV2 {
     private ws: WebSocket | null = null;
     private roomCode: string | null = null;
@@ -49,7 +43,7 @@ class ClientManagerV2 {
     private lastBytesTransferred: number = 0;
 
     constructor() {
-        this.webrtc = new (window as any).WebRTCManagerV2();
+        this.webrtc = new WebRTCManagerV2();
         this.setupUI();
         this.connectToServer();
     }
@@ -60,6 +54,7 @@ class ClientManagerV2 {
 
         this.ws.onopen = () => {
             console.log('🚀 V2サーバー接続完了');
+            // UIには表示せず初期状態を維持
         };
 
         this.ws.onmessage = (event: MessageEvent) => {
@@ -79,33 +74,46 @@ class ClientManagerV2 {
     }
 
     // サーバーメッセージ処理
-    private handleServerMessage(data: any): void {
+    private handleServerMessage(data: {
+        type: 'room-joined' | 'offer' | 'ice-candidate' | 'error';
+        roomCode?: string;
+        offer?: RTCSessionDescriptionInit;
+        candidate?: RTCIceCandidateInit;
+        message?: string;
+    }): void {
         console.log('📥 V2サーバー受信:', data.type, data);
 
         switch (data.type) {
             case 'room-joined':
-                this.roomCode = data.roomCode;
+                this.roomCode = data.roomCode || null;
                 this.updateStatus('connecting', '🤝 P2P接続確立中...');
                 console.log('🏠 ルーム参加完了:', data.roomCode);
-                this.webrtc.init(false);
+                this.webrtc.init(false); // クライアントとしてWebRTC V2初期化
                 break;
 
             case 'offer':
-                this.handleOffer(data.offer);
+                if (data.offer) {
+                    this.handleOffer(data.offer);
+                }
                 break;
 
             case 'ice-candidate':
-                this.handleIceCandidate(data.candidate);
+                if (data.candidate) {
+                    this.handleIceCandidate(data.candidate);
+                }
                 break;
 
             case 'error':
-                console.error('❌ サーバーエラー:', data.message);
-                this.showError(data.message);
+                if (data.message) {
+                    console.error('❌ サーバーエラー:', data.message);
+                    this.showError(data.message);
+                }
                 break;
         }
     }
 
-    private async handleOffer(offer: RTCSessionDescriptionInit): Promise<void> {
+    // Offer処理
+    async handleOffer(offer: RTCSessionDescriptionInit): Promise<void> {
         try {
             console.log('🎯 V2 Offer受信:', offer);
             const answer = await this.webrtc.createAnswer(offer);
@@ -115,13 +123,15 @@ class ClientManagerV2 {
                 answer: answer
             });
             console.log('🎯 V2 Answer送信完了');
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('❌ V2 Answer作成エラー:', error);
-            this.showError('接続応答エラー: ' + error.message);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.showError('接続応答エラー: ' + errorMessage);
         }
     }
 
-    private async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
+    // ICE Candidate処理
+    async handleIceCandidate(candidate: RTCIceCandidateInit): Promise<void> {
         try {
             console.log('🧊 V2 ICE Candidate受信:', candidate);
             await this.webrtc.addIceCandidate(candidate);
@@ -131,7 +141,8 @@ class ClientManagerV2 {
         }
     }
 
-    private sendToServer(data: any): void {
+    // サーバー送信オーバーライド
+    sendToServer(data: { type: string; [key: string]: any }): void {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             console.log('📤 V2サーバー送信:', data.type);
             this.ws.send(JSON.stringify(data));
@@ -140,8 +151,11 @@ class ClientManagerV2 {
         }
     }
 
-    private joinRoom(): void {
+    // ルーム参加
+    joinRoom(): void {
         const roomCodeInput = document.getElementById('roomCode') as HTMLInputElement;
+        if (!roomCodeInput) return;
+
         const code = roomCodeInput.value.trim();
 
         if (code.length !== 4) {
@@ -158,47 +172,57 @@ class ClientManagerV2 {
         this.updateStatus('connecting', '🔄 ルーム参加中...');
     }
 
-    private selectFiles(files: FileList): void {
+    // ファイル選択
+    selectFiles(files: FileList): void {
         this.selectedFiles = Array.from(files);
         this.displaySelectedFiles();
         this.updateSendButton();
     }
 
-    private displaySelectedFiles(): void {
-        const selectedFile = document.getElementById('selectedFile') as HTMLElement;
-        const fileName = document.getElementById('fileName') as HTMLElement;
-        const fileSize = document.getElementById('fileSize') as HTMLElement;
+    // 選択ファイル表示
+    displaySelectedFiles(): void {
+        const selectedFile = document.getElementById('selectedFile');
+        const fileName = document.getElementById('fileName');
+        const fileSize = document.getElementById('fileSize');
 
         if (this.selectedFiles.length > 0) {
             const file = this.selectedFiles[0];
-            fileName.textContent = `📄 ${file.name}`;
-            fileSize.textContent = `📏 ${this.formatFileSize(file.size)}`;
-            selectedFile.style.display = 'block';
+            if (fileName) fileName.textContent = `📄 ${file.name}`;
+            if (fileSize) fileSize.textContent = `📏 ${this.formatFileSize(file.size)}`;
+            if (selectedFile) selectedFile.style.display = 'block';
         } else {
-            selectedFile.style.display = 'none';
+            if (selectedFile) selectedFile.style.display = 'none';
         }
     }
 
-    private updateSendButton(): void {
+    // 送信ボタン状態更新
+    updateSendButton(): void {
         const sendBtn = document.getElementById('sendBtn') as HTMLButtonElement;
+        if (!sendBtn) return;
+
         const canSend = this.selectedFiles.length > 0 &&
                        this.roomCode &&
                        this.roomCode.length === 4 &&
                        this.webrtc.pc &&
                        this.webrtc.pc.connectionState === 'connected';
+
         sendBtn.disabled = !canSend;
     }
 
-    private async sendFiles(): Promise<void> {
+    // ファイル送信（V2）
+    async sendFiles(): Promise<void> {
         if (this.selectedFiles.length === 0) return;
 
         const sendBtn = document.getElementById('sendBtn') as HTMLButtonElement;
-        const progressContainer = document.getElementById('progressContainer') as HTMLElement;
+        const progressContainer = document.getElementById('progressContainer');
+
+        if (!sendBtn || !progressContainer) return;
 
         sendBtn.disabled = true;
         sendBtn.textContent = '🚀 V2送信中...';
         progressContainer.style.display = 'block';
 
+        // 設定値を適用
         this.applySettings();
 
         try {
@@ -208,19 +232,23 @@ class ClientManagerV2 {
                 this.lastProgressUpdate = Date.now();
 
                 this.updateStatus('sending', `🚀 ${file.name} をV2転送中...`);
+
                 await this.webrtc.sendFile(file);
+
                 this.updateStatus('completed', `✅ ${file.name} V2転送完了！`);
             }
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('ファイル送信エラー:', error);
-            this.showError('V2ファイル送信エラー: ' + error.message);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.showError('V2ファイル送信エラー: ' + errorMessage);
         } finally {
             sendBtn.disabled = false;
             sendBtn.textContent = '🚀 高速送信開始';
         }
     }
 
-    private applySettings(): void {
+    // 設定値を適用
+    applySettings(): void {
         const concurrentSends = document.getElementById('concurrentSends') as HTMLInputElement;
         const bufferThreshold = document.getElementById('bufferThreshold') as HTMLInputElement;
         const chunkSizeKB = document.getElementById('chunkSizeKB') as HTMLInputElement;
@@ -236,93 +264,149 @@ class ClientManagerV2 {
         }
     }
 
-    private setupUI(): void {
+    // UIセットアップ
+    setupUI(): void {
+        // ルームコード入力
         const roomCodeInput = document.getElementById('roomCode') as HTMLInputElement;
-        roomCodeInput.addEventListener('input', () => {
-            if (roomCodeInput.value.length === 4) {
-                this.joinRoom();
-            }
-        });
+        if (roomCodeInput) {
+            roomCodeInput.addEventListener('input', () => {
+                if (roomCodeInput.value.length === 4) {
+                    this.joinRoom();
+                }
+            });
+        }
 
+        // ファイル選択
         const fileInput = document.getElementById('fileInput') as HTMLInputElement;
         const selectFileBtn = document.getElementById('selectFileBtn') as HTMLButtonElement;
         const dropArea = document.getElementById('dropArea') as HTMLElement;
         const sendBtn = document.getElementById('sendBtn') as HTMLButtonElement;
 
-        selectFileBtn.addEventListener('click', () => fileInput.click());
+        if (selectFileBtn && fileInput) {
+            selectFileBtn.addEventListener('click', () => {
+                fileInput.click();
+            });
+        }
 
-        fileInput.addEventListener('change', (e: Event) => {
-            const target = e.target as HTMLInputElement;
-            if (target.files) this.selectFiles(target.files);
-        });
+        if (fileInput) {
+            fileInput.addEventListener('change', (e) => {
+                const target = e.target as HTMLInputElement;
+                if (target.files) {
+                    this.selectFiles(target.files);
+                }
+            });
+        }
 
-        dropArea.addEventListener('dragover', (e: DragEvent) => {
-            e.preventDefault();
-            dropArea.classList.add('drag-over');
-        });
+        // ドラッグ&ドロップ
+        if (dropArea) {
+            dropArea.addEventListener('dragover', (e) => {
+                e.preventDefault();
+                dropArea.classList.add('drag-over');
+            });
 
-        dropArea.addEventListener('dragleave', () => {
-            dropArea.classList.remove('drag-over');
-        });
+            dropArea.addEventListener('dragleave', () => {
+                dropArea.classList.remove('drag-over');
+            });
 
-        dropArea.addEventListener('drop', (e: DragEvent) => {
-            e.preventDefault();
-            dropArea.classList.remove('drag-over');
-            if (e.dataTransfer?.files) this.selectFiles(e.dataTransfer.files);
-        });
+            dropArea.addEventListener('drop', (e) => {
+                e.preventDefault();
+                dropArea.classList.remove('drag-over');
+                if (e.dataTransfer && e.dataTransfer.files) {
+                    this.selectFiles(e.dataTransfer.files);
+                }
+            });
+        }
 
-        sendBtn.addEventListener('click', () => this.sendFiles());
+        // 送信ボタン
+        if (sendBtn) {
+            sendBtn.addEventListener('click', () => {
+                this.sendFiles();
+            });
+        }
 
+        // 詳細設定トグル
         const advancedToggle = document.getElementById('advancedToggle') as HTMLButtonElement;
         const advancedSettings = document.getElementById('advancedSettings') as HTMLElement;
 
-        advancedToggle.addEventListener('click', () => {
-            if (advancedSettings.style.display === 'none' || !advancedSettings.style.display) {
-                advancedSettings.style.display = 'block';
-                advancedToggle.textContent = '⚙️ 設定を隠す';
-            } else {
-                advancedSettings.style.display = 'none';
-                advancedToggle.textContent = '⚙️ 詳細設定';
-            }
-        });
+        if (advancedToggle && advancedSettings) {
+            advancedToggle.addEventListener('click', () => {
+                if (advancedSettings.style.display === 'none' || !advancedSettings.style.display) {
+                    advancedSettings.style.display = 'block';
+                    advancedToggle.textContent = '⚙️ 設定を隠す';
+                } else {
+                    advancedSettings.style.display = 'none';
+                    advancedToggle.textContent = '⚙️ 詳細設定';
+                }
+            });
+        }
 
+        // WebRTCイベント
         this.webrtc.onStatusChange = (state: string, message: string) => {
-            const statusEl = document.getElementById('status') as HTMLElement;
-            statusEl.innerHTML = `<span class="${state}">${message}</span>`;
+            const statusEl = document.getElementById('status');
+            if (statusEl) {
+                statusEl.innerHTML = `<span class="${state}">${message}</span>`;
+            }
             this.updateSendButton();
 
+            // P2P接続確立時にファイル選択UIを表示
             if (state === 'connected') {
-                document.getElementById('dropArea')!.style.display = 'block';
-                document.getElementById('sendBtn')!.style.display = 'inline-block';
+                const dropAreaEl = document.getElementById('dropArea');
+                const sendBtnEl = document.getElementById('sendBtn');
+                if (dropAreaEl) dropAreaEl.style.display = 'block';
+                if (sendBtnEl) sendBtnEl.style.display = 'inline-block';
             }
         };
 
-        this.webrtc.onProgress = (progress: number) => this.updateProgress(progress);
-        this.webrtc.onStatsUpdate = (stats: FileStats) => this.updateDetailedStats(stats);
-        this.webrtc.onConnected = () => this.updateSendButton();
-        this.webrtc.onDisconnected = () => this.updateSendButton();
-        this.webrtc.sendToServer = (data: any) => this.sendToServer(data);
+        this.webrtc.onProgress = (progress: number) => {
+            this.updateProgress(progress);
+        };
+
+        this.webrtc.onStatsUpdate = (stats: TransferStats) => {
+            this.updateDetailedStats(stats);
+        };
+
+        this.webrtc.onConnected = () => {
+            this.updateSendButton();
+        };
+
+        this.webrtc.onDisconnected = () => {
+            this.updateSendButton();
+        };
+
+        // サーバー送信メソッド設定
+        this.webrtc.sendToServer = (data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => {
+            this.sendToServer(data);
+        };
     }
 
-    private updateProgress(progress: number): void {
-        const progressBar = document.getElementById('progressBar') as HTMLElement;
-        const progressFill = document.getElementById('progressFill') as HTMLElement;
-        const progressText = document.getElementById('progressText') as HTMLElement;
+    // 進捗更新
+    updateProgress(progress: number): void {
+        const progressBar = document.getElementById('progressBar');
+        const progressFill = document.getElementById('progressFill');
+        const progressText = document.getElementById('progressText');
 
-        if (progressBar) progressBar.style.display = 'block';
-        if (progressFill) progressFill.style.width = `${progress}%`;
-        if (progressText) progressText.textContent = `${progress.toFixed(1)}%`;
+        if (progressBar) {
+            progressBar.style.display = 'block';
+        }
+        if (progressFill) {
+            progressFill.style.width = `${progress}%`;
+        }
+        if (progressText) {
+            progressText.textContent = `${progress.toFixed(1)}%`;
+        }
 
+        // 転送速度計算
         this.calculateTransferSpeed();
     }
 
-    private updateDetailedStats(stats: FileStats): void {
+    // 詳細統計更新
+    updateDetailedStats(stats: TransferStats): void {
         console.log('📊 送信側統計更新:', stats);
 
-        const mainChunksCompleted = document.getElementById('mainChunksCompleted') as HTMLElement;
-        const subChunksCompleted = document.getElementById('subChunksCompleted') as HTMLElement;
-        const transferSpeed = document.getElementById('transferSpeed') as HTMLElement;
-        const failedChunks = document.getElementById('failedChunks') as HTMLElement;
+        const mainChunksCompleted = document.getElementById('mainChunksCompleted');
+        const subChunksCompleted = document.getElementById('subChunksCompleted');
+        const transferSpeed = document.getElementById('transferSpeed');
+        const failedChunks = document.getElementById('failedChunks');
 
         if (mainChunksCompleted) {
             const mainText = `${stats.mainChunksCompleted || 0}/${stats.totalMainChunks || 0}`;
@@ -336,15 +420,16 @@ class ClientManagerV2 {
             transferSpeed.textContent = this.calculateTransferSpeed() + ' MB/s';
         }
         if (failedChunks) {
-            failedChunks.textContent = stats.failedChunks?.toString() || '0';
+            failedChunks.textContent = stats.failedChunks.toString();
         }
     }
 
-    private calculateTransferSpeed(): string {
+    // 転送速度計算
+    calculateTransferSpeed(): string {
         if (!this.transferStartTime || !this.webrtc.chunkManager) return '0';
 
         const now = Date.now();
-        const timeDiff = (now - this.lastProgressUpdate) / 1000;
+        const timeDiff = (now - this.lastProgressUpdate) / 1000; // 秒
         const stats = this.webrtc.chunkManager.getProgress();
         const bytesDiff = stats.bytesCompleted - this.lastBytesTransferred;
 
@@ -358,7 +443,8 @@ class ClientManagerV2 {
         return '0';
     }
 
-    private formatFileSize(bytes: number): string {
+    // ファイルサイズ整形
+    formatFileSize(bytes: number): string {
         if (bytes === 0) return '0 Bytes';
         const k = 1024;
         const sizes = ['Bytes', 'KB', 'MB', 'GB', 'TB'];
@@ -366,8 +452,11 @@ class ClientManagerV2 {
         return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
     }
 
-    private showError(message: string): void {
-        const errorEl = document.getElementById('error') as HTMLElement;
+    // エラー表示
+    showError(message: string): void {
+        const errorEl = document.getElementById('error');
+        if (!errorEl) return;
+
         errorEl.textContent = message;
         errorEl.style.display = 'block';
 
@@ -376,10 +465,14 @@ class ClientManagerV2 {
         }, 5000);
     }
 
-    private updateStatus(state: string, message: string): void {
-        const statusEl = document.getElementById('status') as HTMLElement;
+    // ステータス更新
+    updateStatus(state: string, message: string): void {
+        const statusEl = document.getElementById('status');
+        if (!statusEl) return;
+
         statusEl.innerHTML = `<span class="${state}">${message}</span>`;
     }
 }
 
-new ClientManagerV2();
+// 初期化
+const clientV2 = new ClientManagerV2();

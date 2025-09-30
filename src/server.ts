@@ -1,29 +1,46 @@
-interface WebRTCManagerV2 {
-    pc: RTCPeerConnection | null;
-    chunkManager: any;
-    onStatusChange: (state: string, message: string) => void;
-    onProgress: (progress: number) => void;
-    onStatsUpdate: (stats: any) => void;
-    onConnected: () => void;
-    onDisconnected: () => void;
-    onFileReceived: (fileInfo: any) => void;
-    sendToServer: (data: any) => void;
-    init: (isHost: boolean) => void;
-    createOffer: () => Promise<RTCSessionDescriptionInit>;
-    handleAnswer: (answer: RTCSessionDescriptionInit) => Promise<void>;
-    addIceCandidate: (candidate: RTCIceCandidateInit) => Promise<void>;
-}
-
-declare global {
-    interface Window {
-        WebRTCManagerV2: any;
-    }
-}
 
 /**
  * Fast Transfer V2 サーバーマネージャー
  * 100GB対応・階層チャンク受信の実装
  */
+
+import type { FileInfo, TransferStats, ControlMessage } from './types.js';
+
+declare global {
+    interface WebRTCManagerV2 {
+        pc: RTCPeerConnection | null;
+        dataChannel: RTCDataChannel | null;
+        receiveManager: {
+            filename: string;
+            filesize: number;
+            totalMainChunks: number;
+            totalSubChunks: number;
+            completedChunks: Set<string>;
+            receivedChunks: Map<string, ArrayBuffer>;
+            totalReceived: number;
+        } | null;
+        maxConcurrentSends: number;
+        BUFFER_THRESHOLD: number;
+        adaptiveChunkSize: number;
+
+        onStatusChange: ((state: string, message: string) => void) | null;
+        onProgress: ((progress: number) => void) | null;
+        onStatsUpdate: ((stats: TransferStats) => void) | null;
+        onFileReceived: ((fileInfo: FileInfo) => void) | null;
+        sendToServer: ((data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => void) | null;
+
+        init(isHost: boolean): void;
+        createOffer(): Promise<RTCSessionDescriptionInit>;
+        createAnswer(offer: RTCSessionDescriptionInit): Promise<RTCSessionDescriptionInit>;
+        setRemoteDescription(description: RTCSessionDescriptionInit): Promise<void>;
+        addIceCandidate(candidate: RTCIceCandidateInit): Promise<void>;
+        sendFile(file: File): Promise<void>;
+    }
+
+    var WebRTCManagerV2: {
+        new(): WebRTCManagerV2;
+    };
+}
 class ServerManagerV2 {
     private ws: WebSocket | null = null;
     private roomCode: string | null = null;
@@ -35,11 +52,19 @@ class ServerManagerV2 {
     private lastBytesReceived: number = 0;
 
     // 受信ファイル管理
-    private receiveManager: any = null;
-    private receivedFile: { name: string; size: number; type: string } | null = null;
+    private receiveManager: {
+        filename: string;
+        filesize: number;
+        totalMainChunks: number;
+        totalSubChunks: number;
+        completedChunks: Set<string>;
+        receivedChunks: Map<string, ArrayBuffer>;
+        totalReceived: number;
+    } | null = null;
+    private receivedFile: FileInfo | null = null;
 
     constructor() {
-        this.webrtc = new (window as any).WebRTCManagerV2();
+        this.webrtc = new WebRTCManagerV2();
         this.setupUI();
         this.connectToServer();
     }
@@ -70,16 +95,25 @@ class ServerManagerV2 {
     }
 
     // サーバーメッセージ処理
-    private handleServerMessage(data: any): void {
+    private handleServerMessage(data: {
+        type: 'room-created' | 'client-joined' | 'answer' | 'ice-candidate' | 'error';
+        roomCode?: string;
+        clientId?: number;
+        answer?: RTCSessionDescriptionInit;
+        candidate?: RTCIceCandidateInit;
+        message?: string;
+    }): void {
         console.log('📥 V2サーバー受信:', data.type, data);
 
         switch (data.type) {
             case 'room-created':
-                this.roomCode = data.roomCode;
-                this.updateRoomCode(data.roomCode);
+                this.roomCode = data.roomCode || null;
+                if (data.roomCode) {
+                    this.updateRoomCode(data.roomCode);
+                }
                 this.updateStatus('waiting', '⏳ クライアントの接続を待機中...');
                 console.log('🏠 ルーム作成完了:', data.roomCode);
-                this.webrtc.init(true);
+                this.webrtc.init(true); // ホストとしてWebRTC V2初期化
                 break;
 
             case 'client-joined':
@@ -89,16 +123,22 @@ class ServerManagerV2 {
                 break;
 
             case 'answer':
-                this.handleAnswer(data.answer);
+                if (data.answer) {
+                    this.handleAnswer(data.answer);
+                }
                 break;
 
             case 'ice-candidate':
-                this.handleIceCandidate(data.candidate);
+                if (data.candidate) {
+                    this.handleIceCandidate(data.candidate);
+                }
                 break;
 
             case 'error':
-                console.error('❌ サーバーエラー:', data.message);
-                this.showError(data.message);
+                if (data.message) {
+                    console.error('❌ サーバーエラー:', data.message);
+                    this.showError(data.message);
+                }
                 break;
         }
     }
@@ -119,9 +159,10 @@ class ServerManagerV2 {
                 offer: offer
             });
             console.log('🎯 V2 Offer送信完了');
-        } catch (error: any) {
+        } catch (error: unknown) {
             console.error('❌ V2 Offer作成エラー:', error);
-            this.showError('接続要求エラー: ' + error.message);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.showError('接続開始エラー: ' + errorMessage);
         }
     }
 
@@ -129,11 +170,12 @@ class ServerManagerV2 {
     private async handleAnswer(answer: RTCSessionDescriptionInit): Promise<void> {
         try {
             console.log('🎯 V2 Answer受信:', answer);
-            await this.webrtc.handleAnswer(answer);
-            console.log('🎯 V2 Answer処理完了');
-        } catch (error: any) {
-            console.error('❌ V2 Answer処理エラー:', error);
-            this.showError('接続応答処理エラー: ' + error.message);
+            await this.webrtc.setRemoteDescription(answer);
+            console.log('🎯 V2 Answer設定完了');
+        } catch (error: unknown) {
+            console.error('❌ V2 Answer設定エラー:', error);
+            const errorMessage = error instanceof Error ? error.message : 'Unknown error';
+            this.showError('接続応答エラー: ' + errorMessage);
         }
     }
 
@@ -143,13 +185,19 @@ class ServerManagerV2 {
             console.log('🧊 V2 ICE Candidate受信:', candidate);
             await this.webrtc.addIceCandidate(candidate);
             console.log('🧊 V2 ICE Candidate追加完了');
-        } catch (error) {
+        } catch (error: unknown) {
             console.error('❌ V2 ICE Candidate追加エラー:', error);
         }
     }
 
     // サーバー送信
-    private sendToServer(data: any): void {
+    private sendToServer(data: {
+        type: 'create-room' | 'offer' | 'answer' | 'ice-candidate';
+        roomCode?: string;
+        offer?: RTCSessionDescriptionInit;
+        answer?: RTCSessionDescriptionInit;
+        candidate?: RTCIceCandidateInit;
+    }): void {
         if (this.ws && this.ws.readyState === WebSocket.OPEN) {
             console.log('📤 V2サーバー送信:', data.type);
             this.ws.send(JSON.stringify(data));
@@ -166,146 +214,141 @@ class ServerManagerV2 {
 
     // UIセットアップ
     private setupUI(): void {
+        // コピーボタン
+        const copyBtn = document.getElementById('copyBtn') as HTMLElement;
+        copyBtn.addEventListener('click', () => {
+            if (this.roomCode) {
+                navigator.clipboard.writeText(this.roomCode).then(() => {
+                    copyBtn.textContent = '✅ コピーしました！';
+                    setTimeout(() => {
+                        copyBtn.textContent = '📋 コードをコピー';
+                    }, 2000);
+                });
+            }
+        });
+
+        // ダウンロードボタン
+        const downloadBtn = document.getElementById('downloadBtn') as HTMLElement;
+        downloadBtn.addEventListener('click', () => {
+            this.downloadFile();
+        });
+
+        // WebRTCイベント
         this.webrtc.onStatusChange = (state: string, message: string) => {
-            const statusEl = document.getElementById('status') as HTMLElement;
-            statusEl.innerHTML = `<span class="${state}">${message}</span>`;
+            this.updateStatus(state, message);
         };
 
         this.webrtc.onProgress = (progress: number) => {
             this.updateProgress(progress);
         };
 
-        this.webrtc.onStatsUpdate = (stats: any) => {
+        this.webrtc.onStatsUpdate = (stats: TransferStats) => {
             this.updateDetailedStats(stats);
         };
 
-        this.webrtc.onConnected = () => {
-            console.log('✅ P2P接続確立 - ファイル受信準備完了');
+        this.webrtc.onFileReceived = (fileData: FileInfo) => {
+            this.handleFileReceived(fileData);
         };
 
-        this.webrtc.onDisconnected = () => {
-            console.log('❌ P2P接続切断');
-        };
-
-        this.webrtc.onFileReceived = (fileInfo: any) => {
-            this.handleFileReceived(fileInfo);
-        };
-
-        this.webrtc.sendToServer = (data: any) => {
-            this.sendToServer(data);
+        // サーバー送信メソッド設定
+        this.webrtc.sendToServer = (data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => {
+            // WebRTCのメッセージはシグナリングサーバーに転送しない
+            console.log('📤 WebRTCメッセージ（シグナリングサーバーには送信しない）:', data.type);
         };
     }
 
     // 進捗更新
     private updateProgress(progress: number): void {
-        const progressBar = document.getElementById('progressBar') as HTMLElement;
+        const progressBar = document.getElementById('progressContainer') as HTMLElement;
         const progressFill = document.getElementById('progressFill') as HTMLElement;
         const progressText = document.getElementById('progressText') as HTMLElement;
 
-        if (progressBar) progressBar.style.display = 'block';
-        if (progressFill) progressFill.style.width = `${progress}%`;
-        if (progressText) progressText.textContent = `${progress.toFixed(1)}%`;
+        if (progressBar) {
+            progressBar.style.display = 'block';
+        }
+        if (progressFill) {
+            progressFill.style.width = `${progress}%`;
+        }
+        if (progressText) {
+            progressText.textContent = `${progress.toFixed(1)}%`;
+        }
 
+        // 受信速度計算
         this.calculateReceiveSpeed();
     }
 
     // 詳細統計更新
-    private updateDetailedStats(stats: any): void {
-        console.log('📊 受信側統計更新:', stats);
-
+    private updateDetailedStats(stats: TransferStats): void {
         const mainChunksCompleted = document.getElementById('mainChunksCompleted') as HTMLElement;
         const subChunksCompleted = document.getElementById('subChunksCompleted') as HTMLElement;
-        const transferSpeed = document.getElementById('transferSpeed') as HTMLElement;
+        const receiveSpeed = document.getElementById('receiveSpeed') as HTMLElement;
         const failedChunks = document.getElementById('failedChunks') as HTMLElement;
 
         if (mainChunksCompleted) {
-            const mainText = `${stats.mainChunksCompleted || 0}/${stats.totalMainChunks || 0}`;
-            mainChunksCompleted.textContent = mainText;
+            mainChunksCompleted.textContent = `${stats.mainChunksCompleted}/${stats.totalMainChunks}`;
         }
         if (subChunksCompleted) {
-            const subText = `${stats.chunksCompleted || 0}/${stats.totalChunks || 0}`;
-            subChunksCompleted.textContent = subText;
+            subChunksCompleted.textContent = `${stats.chunksCompleted}/${stats.totalChunks}`;
         }
-        if (transferSpeed) {
-            transferSpeed.textContent = this.calculateReceiveSpeed() + ' MB/s';
+        if (receiveSpeed) {
+            receiveSpeed.textContent = this.calculateReceiveSpeed() + ' MB/s';
         }
         if (failedChunks) {
-            failedChunks.textContent = stats.failedChunks || '0';
+            failedChunks.textContent = stats.failedChunks.toString();
         }
     }
 
-    // 転送速度計算
+    // 受信速度計算
     private calculateReceiveSpeed(): string {
-        if (!this.receiveStartTime || !this.webrtc.chunkManager) return '0';
+        if (!this.receiveStartTime || !this.webrtc.receiveManager) return '0';
 
         const now = Date.now();
-        const timeDiff = (now - this.lastProgressUpdate) / 1000;
-        const stats = this.webrtc.chunkManager.getProgress();
-        const bytesDiff = stats.bytesCompleted - this.lastBytesReceived;
+        const timeDiff = (now - this.lastProgressUpdate) / 1000; // 秒
+        const bytesDiff = this.webrtc.receiveManager.totalReceived - this.lastBytesReceived;
 
         if (timeDiff > 0) {
             const speedMBps = (bytesDiff / (1024 * 1024)) / timeDiff;
             this.lastProgressUpdate = now;
-            this.lastBytesReceived = stats.bytesCompleted;
+            this.lastBytesReceived = this.webrtc.receiveManager.totalReceived;
             return speedMBps.toFixed(1);
         }
 
         return '0';
     }
 
-    // ファイル受信処理
-    private handleFileReceived(fileInfo: any): void {
-        console.log('🎁 V2ファイル受信完了:', fileInfo);
+    // ファイル受信完了処理
+    private handleFileReceived(fileData: FileInfo): void {
+        console.log('✅ ファイル受信完了:', fileData.name);
+        this.receivedFile = fileData;
 
-        this.receivedFile = {
-            name: fileInfo.name,
-            size: fileInfo.size,
-            type: fileInfo.type
-        };
+        const fileInfo = document.getElementById('fileInfo') as HTMLElement;
+        const fileName = document.getElementById('fileName') as HTMLElement;
+        const fileSize = document.getElementById('fileSize') as HTMLElement;
+        const downloadSection = document.getElementById('downloadSection') as HTMLElement;
 
-        this.updateStatus('completed', `✅ ${fileInfo.name} 受信完了！`);
-        this.displayReceivedFile();
-    }
+        fileName.textContent = `📄 ${fileData.name}`;
+        fileSize.textContent = `📏 ${this.formatFileSize(fileData.size)}`;
+        fileInfo.style.display = 'block';
+        downloadSection.style.display = 'block';
 
-    // 受信ファイル表示
-    private displayReceivedFile(): void {
-        if (!this.receivedFile) return;
-
-        const receivedFileEl = document.getElementById('receivedFile') as HTMLElement;
-        const receivedFileName = document.getElementById('receivedFileName') as HTMLElement;
-        const receivedFileSize = document.getElementById('receivedFileSize') as HTMLElement;
-        const downloadBtn = document.getElementById('downloadBtn') as HTMLButtonElement;
-
-        if (receivedFileEl && receivedFileName && receivedFileSize) {
-            receivedFileName.textContent = `📄 ${this.receivedFile.name}`;
-            receivedFileSize.textContent = `📏 ${this.formatFileSize(this.receivedFile.size)}`;
-            receivedFileEl.style.display = 'block';
-
-            if (downloadBtn) {
-                downloadBtn.style.display = 'inline-block';
-                downloadBtn.onclick = () => this.downloadFile();
-            }
-        }
+        this.updateStatus('completed', '✅ ファイル受信完了！ダウンロード可能です');
     }
 
     // ファイルダウンロード
     private downloadFile(): void {
-        if (!this.receivedFile || !this.webrtc.chunkManager) return;
+        if (!this.receivedFile) return;
 
-        const fileData = this.webrtc.chunkManager.getAssembledFile();
-        if (fileData) {
-            const blob = new Blob([fileData], { type: this.receivedFile.type });
-            const url = URL.createObjectURL(blob);
-            const a = document.createElement('a');
-            a.href = url;
-            a.download = this.receivedFile.name;
-            document.body.appendChild(a);
-            a.click();
-            document.body.removeChild(a);
-            URL.revokeObjectURL(url);
+        const blob = new Blob([this.receivedFile.data], { type: 'application/octet-stream' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = this.receivedFile.name;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
 
-            console.log('📥 V2ファイルダウンロード完了:', this.receivedFile.name);
-        }
+        console.log('💾 ファイルダウンロード完了:', this.receivedFile.name);
     }
 
     // ファイルサイズ整形
@@ -335,6 +378,5 @@ class ServerManagerV2 {
     }
 }
 
-new ServerManagerV2();
-
-export default ServerManagerV2;
+// 初期化
+const serverV2 = new ServerManagerV2();
