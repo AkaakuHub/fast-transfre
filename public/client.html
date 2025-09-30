@@ -267,6 +267,88 @@
             padding: 5px;
             font-size: 0.9rem;
         }
+
+        .files-list-container {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            border: 2px solid #e9ecef;
+        }
+
+        .files-list-container h3 {
+            margin: 0 0 15px 0;
+            color: #333;
+            font-size: 1.2rem;
+        }
+
+        .files-list {
+            max-height: 200px;
+            overflow-y: auto;
+        }
+
+        .file-item {
+            background: white;
+            border-radius: 8px;
+            padding: 12px;
+            margin: 8px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border: 1px solid #dee2e6;
+        }
+
+        .file-info {
+            flex: 1;
+        }
+
+        .file-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+            word-break: break-all;
+        }
+
+        .file-size {
+            color: #666;
+            font-size: 0.9rem;
+        }
+
+        .file-status {
+            margin-left: 15px;
+        }
+
+        .status-indicator {
+            font-size: 0.9rem;
+            font-weight: 500;
+        }
+
+        .status-indicator.completed {
+            color: #28a745;
+        }
+
+        .file-actions {
+            margin-left: 15px;
+        }
+
+        .remove-file-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            border-radius: 50%;
+            width: 24px;
+            height: 24px;
+            cursor: pointer;
+            font-size: 12px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            transition: background-color 0.2s;
+        }
+
+        .remove-file-btn:hover {
+            background: #c82333;
+        }
     </style>
 </head>
 <body>
@@ -291,6 +373,11 @@
         <div class="selected-file" id="selectedFile">
             <div class="selected-file-name" id="fileName"></div>
             <div class="selected-file-size" id="fileSize"></div>
+        </div>
+
+        <div class="files-list-container" id="selectedFilesContainer" style="display: none;">
+            <h3>📁 選択ファイル一覧</h3>
+            <div class="files-list" id="selectedFilesList"></div>
         </div>
 
         <button class="btn" id="sendBtn" style="display: none;">🚀 高速送信開始</button>

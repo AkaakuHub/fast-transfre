@@ -174,23 +174,67 @@ class ClientManagerV2 {
 
     // ファイル選択
     selectFiles(files: FileList): void {
-        this.selectedFiles = Array.from(files);
+        const newFiles = Array.from(files);
+        this.selectedFiles = [...this.selectedFiles, ...newFiles];
         this.displaySelectedFiles();
         this.updateSendButton();
     }
 
+    // ファイル削除
+    removeFile(index: number): void {
+        if (index >= 0 && index < this.selectedFiles.length) {
+            const removedFile = this.selectedFiles[index];
+            console.log(`🗑️ ファイルを削除: ${removedFile.name}`);
+            this.selectedFiles.splice(index, 1);
+            this.displaySelectedFiles();
+            this.updateSendButton();
+        }
+    }
+
     // 選択ファイル表示
     displaySelectedFiles(): void {
+        const selectedFilesList = document.getElementById('selectedFilesList') as HTMLElement;
+        const selectedFilesContainer = document.getElementById('selectedFilesContainer') as HTMLElement;
         const selectedFile = document.getElementById('selectedFile');
         const fileName = document.getElementById('fileName');
         const fileSize = document.getElementById('fileSize');
 
+        if (!selectedFilesList || !selectedFilesContainer) return;
+
+        selectedFilesList.innerHTML = '';
+
+        this.selectedFiles.forEach((file, index) => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${this.formatFileSize(file.size)}</span>
+                </div>
+                <div class="file-actions">
+                    <button class="remove-file-btn" data-index="${index}">✕</button>
+                </div>
+            `;
+            selectedFilesList.appendChild(fileItem);
+        });
+
+        // 削除ボタンにイベントリスナーを追加
+        selectedFilesList.querySelectorAll('.remove-file-btn').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const index = parseInt((e.target as HTMLElement).dataset.index || '0');
+                this.removeFile(index);
+            });
+        });
+
+        // ファイルがある場合はリストコンテナを表示
         if (this.selectedFiles.length > 0) {
+            selectedFilesContainer.style.display = 'block';
             const file = this.selectedFiles[0];
             if (fileName) fileName.textContent = `📄 ${file.name}`;
             if (fileSize) fileSize.textContent = `📏 ${this.formatFileSize(file.size)}`;
             if (selectedFile) selectedFile.style.display = 'block';
         } else {
+            selectedFilesContainer.style.display = 'none';
             if (selectedFile) selectedFile.style.display = 'none';
         }
     }
@@ -226,16 +270,23 @@ class ClientManagerV2 {
         this.applySettings();
 
         try {
-            for (const file of this.selectedFiles) {
+            for (let i = 0; i < this.selectedFiles.length; i++) {
+                const file = this.selectedFiles[i];
                 this.transferStartTime = Date.now();
                 this.lastBytesTransferred = 0;
                 this.lastProgressUpdate = Date.now();
 
-                this.updateStatus('sending', `🚀 ${file.name} をV2転送中...`);
+                this.updateStatus('sending', `🚀 ${file.name} をV2転送中... (${i + 1}/${this.selectedFiles.length})`);
 
                 await this.webrtc.sendFile(file);
 
                 this.updateStatus('completed', `✅ ${file.name} V2転送完了！`);
+
+                // ファイル間に少し待機時間を入れてDataChannelを安定させる
+                if (i < this.selectedFiles.length - 1) {
+                    console.log('⏳ 次のファイル送信前に待機...');
+                    await new Promise(resolve => setTimeout(resolve, 1000));
+                }
             }
         } catch (error: unknown) {
             console.error('ファイル送信エラー:', error);

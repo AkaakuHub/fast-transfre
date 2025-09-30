@@ -268,8 +268,14 @@ class WebRTCManagerV2 {
      * ファイル送信（V2）
      */
     async sendFile(file: File) {
+        // DataChannelが準備できているかチェック
         if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-            throw new Error('DataChannelが準備できていません');
+            console.log('⚠️ DataChannelが未準備。接続を待機...');
+            await this.waitForDataChannelReady();
+        }
+
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+            throw new Error('DataChannelを確立できませんでした');
         }
 
         console.log(`🚀 V2ファイル送信開始: ${file.name} (${this.formatFileSize(file.size)})`);
@@ -397,6 +403,21 @@ class WebRTCManagerV2 {
 
         } catch (error) {
             console.error(`❌ サブチャンク送信失敗: ${subChunk.id}`, error);
+
+            // DataChannelが切断された場合は再接続を試みる
+            if (error instanceof Error && error.message.includes('readyState is not')) {
+                console.log('🔄 DataChannel再接続を試みます...');
+                await this.waitForDataChannelReady();
+                // 再送信を試みる
+                try {
+                    await this.sendSubChunk(subChunk);
+                    console.log(`✅ サブチャンク再送信成功: ${subChunk.id}`);
+                    return;
+                } catch (retryError) {
+                    console.error(`❌ サブチャンク再送信失敗: ${subChunk.id}`, retryError);
+                }
+            }
+
             this.chunkManager!.markSubChunkFailed(subChunk.id);
         } finally {
             this.activeSends--;
@@ -484,10 +505,46 @@ class WebRTCManagerV2 {
     }
 
     /**
+     * DataChannelが準備できるまで待機
+     */
+    async waitForDataChannelReady(): Promise<void> {
+        return new Promise((resolve, reject) => {
+            if (this.dataChannel && this.dataChannel.readyState === 'open') {
+                resolve();
+                return;
+            }
+
+            let timeoutId: NodeJS.Timeout;
+
+            const checkInterval = setInterval(() => {
+                if (this.dataChannel && this.dataChannel.readyState === 'open') {
+                    clearInterval(checkInterval);
+                    clearTimeout(timeoutId);
+                    console.log('✅ DataChannel準備完了');
+                    resolve();
+                } else if (this.dataChannel && this.dataChannel.readyState === 'closed') {
+                    clearInterval(checkInterval);
+                    clearTimeout(timeoutId);
+                    reject(new Error('DataChannelが閉じています'));
+                }
+            }, 100);
+
+            // 10秒タイムアウト
+            timeoutId = setTimeout(() => {
+                clearInterval(checkInterval);
+                reject(new Error('DataChannel接続タイムアウト'));
+            }, 10000);
+        });
+    }
+
+    /**
      * 制御メッセージ送信
      */
     async sendMessage(data: ControlMessage | ChunkMessage) {
         try {
+            if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+                await this.waitForDataChannelReady();
+            }
             this.dataChannel!.send(JSON.stringify(data));
         } catch (error) {
             console.error('❌ メッセージ送信失敗:', error);

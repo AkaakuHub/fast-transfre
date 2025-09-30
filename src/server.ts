@@ -61,7 +61,8 @@ class ServerManagerV2 {
         receivedChunks: Map<string, ArrayBuffer>;
         totalReceived: number;
     } | null = null;
-    private receivedFile: FileInfo | null = null;
+    private receivedFiles: FileInfo[] = [];
+    private currentFileIndex: number = 0;
 
     constructor() {
         this.webrtc = new WebRTCManagerV2();
@@ -314,38 +315,59 @@ class ServerManagerV2 {
     // ファイル受信完了処理
     private handleFileReceived(fileData: FileInfo): void {
         console.log('✅ ファイル受信完了:', fileData.name);
-        this.receivedFile = fileData;
+        this.receivedFiles.push(fileData);
 
-        const fileInfo = document.getElementById('fileInfo') as HTMLElement;
-        const fileName = document.getElementById('fileName') as HTMLElement;
-        const fileSize = document.getElementById('fileSize') as HTMLElement;
-
-        fileName.textContent = `📄 ${fileData.name}`;
-        fileSize.textContent = `📏 ${this.formatFileSize(fileData.size)}`;
-        fileInfo.style.display = 'block';
-
-        this.updateStatus('completed', '✅ ファイル受信完了！自動ダウンロード開始中...');
+        // 受信ファイルリストを更新
+        this.updateReceivedFilesList();
 
         // 自動でダウンロードを開始
-        this.downloadFile();
+        this.downloadFile(fileData);
+    }
+
+    // 受信ファイルリスト更新
+    private updateReceivedFilesList(): void {
+        const fileList = document.getElementById('receivedFilesList') as HTMLElement;
+        const filesListContainer = document.getElementById('filesListContainer') as HTMLElement;
+
+        if (!fileList || !filesListContainer) return;
+
+        fileList.innerHTML = '';
+
+        this.receivedFiles.forEach((file, index) => {
+            const fileItem = document.createElement('div');
+            fileItem.className = 'file-item';
+            fileItem.innerHTML = `
+                <div class="file-info">
+                    <span class="file-name">${file.name}</span>
+                    <span class="file-size">${this.formatFileSize(file.size)}</span>
+                </div>
+                <div class="file-status">
+                    <span class="status-indicator completed">✅ 受信完了</span>
+                </div>
+            `;
+            fileList.appendChild(fileItem);
+        });
+
+        // ファイルがある場合はリストコンテナを表示
+        if (this.receivedFiles.length > 0) {
+            filesListContainer.style.display = 'block';
+        }
     }
 
     // ファイルダウンロード
-    private downloadFile(): void {
-        if (!this.receivedFile) return;
-
-        const blob = new Blob([this.receivedFile.data], { type: 'application/octet-stream' });
+    private downloadFile(fileData: FileInfo): void {
+        const blob = new Blob([fileData.data], { type: 'application/octet-stream' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
-        a.download = this.receivedFile.name;
+        a.download = fileData.name;
         document.body.appendChild(a);
         a.click();
         document.body.removeChild(a);
         URL.revokeObjectURL(url);
 
-        console.log('💾 ファイルダウンロード完了:', this.receivedFile.name);
-        this.updateStatus('completed', '✅ ファイルダウンロード完了！');
+        console.log('💾 ファイルダウンロード完了:', fileData.name);
+        this.updateStatus('completed', `✅ ${fileData.name} ダウンロード完了！`);
     }
 
     // ファイルサイズ整形
