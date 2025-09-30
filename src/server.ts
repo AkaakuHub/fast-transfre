@@ -227,12 +227,7 @@ class ServerManagerV2 {
             }
         });
 
-        // ダウンロードボタン
-        const downloadBtn = document.getElementById('downloadBtn') as HTMLElement;
-        downloadBtn.addEventListener('click', () => {
-            this.downloadFile();
-        });
-
+        
         // WebRTCイベント
         this.webrtc.onStatusChange = (state: string, message: string) => {
             this.updateStatus(state, message);
@@ -324,14 +319,15 @@ class ServerManagerV2 {
         const fileInfo = document.getElementById('fileInfo') as HTMLElement;
         const fileName = document.getElementById('fileName') as HTMLElement;
         const fileSize = document.getElementById('fileSize') as HTMLElement;
-        const downloadSection = document.getElementById('downloadSection') as HTMLElement;
 
         fileName.textContent = `📄 ${fileData.name}`;
         fileSize.textContent = `📏 ${this.formatFileSize(fileData.size)}`;
         fileInfo.style.display = 'block';
-        downloadSection.style.display = 'block';
 
-        this.updateStatus('completed', '✅ ファイル受信完了！ダウンロード可能です');
+        this.updateStatus('completed', '✅ ファイル受信完了！自動ダウンロード開始中...');
+
+        // 自動でダウンロードを開始
+        this.downloadFile();
     }
 
     // ファイルダウンロード
@@ -349,6 +345,7 @@ class ServerManagerV2 {
         URL.revokeObjectURL(url);
 
         console.log('💾 ファイルダウンロード完了:', this.receivedFile.name);
+        this.updateStatus('completed', '✅ ファイルダウンロード完了！');
     }
 
     // ファイルサイズ整形
