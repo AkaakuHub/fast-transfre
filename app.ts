@@ -1,9 +1,13 @@
-const http = require('http');
-const fs = require('fs');
-const path = require('path');
+import http from 'http';
+import fs from 'fs';
+import path from 'path';
+import { fileURLToPath } from 'url';
 
-const server = http.createServer((req, res) => {
-    let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url);
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
+const server = http.createServer((req: http.IncomingMessage, res: http.ServerResponse) => {
+    let filePath = path.join(__dirname, 'public', req.url === '/' ? 'index.html' : req.url || '');
 
     const extname = path.extname(filePath);
     let contentType = 'text/html';
@@ -11,6 +15,9 @@ const server = http.createServer((req, res) => {
     switch (extname) {
         case '.js':
             contentType = 'text/javascript';
+            break;
+        case '.ts':
+            contentType = 'text/typescript';
             break;
         case '.css':
             contentType = 'text/css';
@@ -20,7 +27,7 @@ const server = http.createServer((req, res) => {
             break;
     }
 
-    fs.readFile(filePath, (error, content) => {
+    fs.readFile(filePath, (error: any, content: Buffer) => {
         if (error) {
             if (error.code == 'ENOENT') {
                 res.writeHead(404);

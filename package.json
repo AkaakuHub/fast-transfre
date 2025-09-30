@@ -4,19 +4,30 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "start": "node app.js",
-    "server": "node server.js",
-    "dev": "concurrently \"npm run server\" \"node app.js\"",
+    "start": "npx tsx app.ts",
+    "server": "npx tsx server.ts",
+    "dev": "concurrently \"npm run build:watch\" \"npm run start-ws\" \"npm run start-http\"",
+    "start-ws": "node dist/server.js",
+    "start-http": "node dist/app.js",
+    "build": "tsc",
+    "build:watch": "tsc --watch",
+    "vite:dev": "vite",
+    "vite:build": "vite build",
+    "vite:preview": "vite preview",
     "test": "echo \"Error: no test specified\" && exit 1"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
-  "type": "commonjs",
+  "type": "module",
   "dependencies": {
     "ws": "^8.18.3"
   },
   "devDependencies": {
-    "concurrently": "^9.2.1"
+    "@types/node": "^24.6.0",
+    "@types/ws": "^8.18.1",
+    "concurrently": "^9.2.1",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.7"
   }
 }

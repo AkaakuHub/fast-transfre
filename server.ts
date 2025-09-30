@@ -1,23 +1,34 @@
-const WebSocket = require('ws');
+import WebSocket, { WebSocketServer } from 'ws';
 
-const wss = new WebSocket.Server({ port: 3000 });
-const rooms = new Map();
+const wss = new WebSocketServer({ port: 3000 });
+const rooms = new Map<string, {
+  host: WebSocket;
+  clients: WebSocket[];
+  hostId: number;
+}>();
+
+interface MessageData {
+  type: string;
+  roomCode?: string;
+  clientId?: number;
+  [key: string]: any;
+}
 
 // 4桁OTP生成
-function generateOTP() {
+function generateOTP(): string {
   return Math.floor(1000 + Math.random() * 9000).toString();
 }
 
 // クライアント接続処理
-wss.on('connection', (ws) => {
+wss.on('connection', (ws: WebSocket) => {
   console.log('クライアント接続');
 
-  let roomCode = null;
+  let roomCode: string | null = null;
   let isHost = false;
 
   // メッセージ処理
-  ws.on('message', (message) => {
-    const data = JSON.parse(message);
+  ws.on('message', (message: WebSocket.Data) => {
+    const data: MessageData = JSON.parse(message.toString());
 
     switch (data.type) {
       case 'create-room':
@@ -39,6 +50,8 @@ wss.on('connection', (ws) => {
         break;
 
       case 'join-room':
+        if (!data.roomCode) break;
+
         const room = rooms.get(data.roomCode);
 
         if (room && room.host.readyState === WebSocket.OPEN) {
@@ -68,18 +81,18 @@ wss.on('connection', (ws) => {
       case 'answer':
       case 'ice-candidate':
         // シグナリングデータ転送
-        const targetRoom = rooms.get(roomCode);
-        if (targetRoom) {
-          const targets = isHost ? targetRoom.clients : [targetRoom.host];
-          targets.forEach(target => {
-            if (target.readyState === WebSocket.OPEN) {
-              target.send(JSON.stringify(data));
-            }
-          });
+        if (roomCode) {
+          const targetRoom = rooms.get(roomCode);
+          if (targetRoom) {
+            const targets = isHost ? targetRoom.clients : [targetRoom.host];
+            targets.forEach(target => {
+              if (target.readyState === WebSocket.OPEN) {
+                target.send(JSON.stringify(data));
+              }
+            });
+          }
         }
         break;
-
-      // ファイル関連の処理は削除（シグナリングのみ）
     }
   });
 
