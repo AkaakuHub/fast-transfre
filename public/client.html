@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fast Transfer - クライアント側</title>
+    <title>Fast Transfer V2 - クライアント側</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -22,7 +22,7 @@
             box-shadow: 0 20px 60px rgba(0,0,0,0.2);
             padding: 40px;
             text-align: center;
-            max-width: 450px;
+            max-width: 600px;
             width: 90%;
         }
 
@@ -36,11 +36,23 @@
         .subtitle {
             color: #666;
             margin-bottom: 30px;
-            font-size: 1.1rem;
+            font-size: 1.2rem;
+        }
+
+        .v2-badge {
+            background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
+            color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            display: inline-block;
         }
 
         .input-group {
             margin: 20px 0;
+            text-align: left;
         }
 
         label {
@@ -48,7 +60,6 @@
             font-weight: 600;
             color: #333;
             margin-bottom: 10px;
-            text-align: left;
         }
 
         input[type="text"] {
@@ -156,13 +167,20 @@
             color: #51cf66;
         }
 
+        .progress-container {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            display: none;
+        }
+
         .progress-bar {
-            background: #f0f0f0;
+            background: #e0e0e0;
             border-radius: 10px;
             height: 20px;
             overflow: hidden;
-            margin: 20px 0;
-            display: none;
+            margin: 10px 0;
         }
 
         .progress-fill {
@@ -170,6 +188,32 @@
             height: 100%;
             width: 0%;
             transition: width 0.3s ease;
+        }
+
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .stat-item {
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 2px;
         }
 
         .error {
@@ -180,12 +224,56 @@
             margin: 20px 0;
             display: none;
         }
+
+        .advanced-toggle {
+            background: transparent;
+            border: 2px solid #667eea;
+            color: #667eea;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin: 10px 0;
+        }
+
+        .advanced-toggle:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .advanced-settings {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            display: none;
+            text-align: left;
+        }
+
+        .setting-item {
+            margin: 10px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .setting-item label {
+            margin: 0;
+            font-size: 0.9rem;
+        }
+
+        .setting-item input {
+            width: 80px;
+            padding: 5px;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1 class="title">📤 Fast Transfer</h1>
-        <p class="subtitle">クライアント側 - ファイル送信</p>
+        <h1 class="title">📤 Fast Transfer V2</h1>
+        <div class="v2-badge">100GB対応・階層チャンク転送</div>
+        <p class="subtitle">クライアント側 - 超高速ファイル送信</p>
 
         <div class="input-group">
             <label for="roomCode">🔑 ルームコードを入力</label>
@@ -194,7 +282,7 @@
 
         <div class="file-drop-area" id="dropArea" style="display: none;">
             <div class="file-icon">📁</div>
-            <div class="file-text">ファイルをドラッグ&ドロップ</div>
+            <div class="file-text">100GBファイルもOK！ドラッグ&ドロップ</div>
             <div class="file-text">または</div>
             <button class="btn" type="button" id="selectFileBtn">ファイルを選択</button>
             <input type="file" id="fileInput" class="file-input" multiple>
@@ -205,19 +293,60 @@
             <div class="selected-file-size" id="fileSize"></div>
         </div>
 
-        <button class="btn" id="sendBtn" style="display: none;">📤 送信開始</button>
+        <button class="btn" id="sendBtn" style="display: none;">🚀 高速送信開始</button>
+
+        <button class="advanced-toggle" id="advancedToggle">⚙️ 詳細設定</button>
+
+        <div class="advanced-settings" id="advancedSettings">
+            <div class="setting-item">
+                <label for="concurrentSends">並列送信数:</label>
+                <input type="number" id="concurrentSends" value="3" min="1" max="8">
+            </div>
+            <div class="setting-item">
+                <label for="bufferThreshold">バッファ閾値(MB):</label>
+                <input type="number" id="bufferThreshold" value="1" min="0.5" max="10" step="0.5">
+            </div>
+            <div class="setting-item">
+                <label for="chunkSizeKB">チャンクサイズ(KB):</label>
+                <input type="number" id="chunkSizeKB" value="16" min="4" max="64">
+            </div>
+        </div>
+
+        <div class="progress-container" id="progressContainer">
+            <h3>📊 転送進捗</h3>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div id="progressText">0%</div>
+
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="mainChunksCompleted">0</div>
+                    <div class="stat-label">メインチャンク</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="subChunksCompleted">0</div>
+                    <div class="stat-label">サブチャンク</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="transferSpeed">0 MB/s</div>
+                    <div class="stat-label">転送速度</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="failedChunks">0</div>
+                    <div class="stat-label">失敗チャンク</div>
+                </div>
+            </div>
+        </div>
 
         <div class="status" id="status">
             <span class="connecting">⏳ ルームコードを入力してファイルを選択してください</span>
         </div>
 
-        <div class="progress-bar" id="progressBar">
-            <div class="progress-fill" id="progressFill"></div>
-        </div>
-
         <div class="error" id="error"></div>
     </div>
 
+    <script src="chunk-manager.js"></script>
     <script src="webrtc.js"></script>
     <script src="client.js"></script>
 </body>

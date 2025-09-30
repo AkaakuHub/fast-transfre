@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Fast Transfer - サーバー側</title>
+    <title>Fast Transfer V2 - サーバー側</title>
     <style>
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
@@ -22,7 +22,7 @@
             box-shadow: 0 20px 60px rgba(0,0,0,0.2);
             padding: 40px;
             text-align: center;
-            max-width: 400px;
+            max-width: 600px;
             width: 90%;
         }
 
@@ -36,46 +36,75 @@
         .subtitle {
             color: #666;
             margin-bottom: 30px;
-            font-size: 1.1rem;
+            font-size: 1.2rem;
         }
 
-        .otp-display {
+        .v2-badge {
             background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%);
             color: white;
+            padding: 5px 15px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            font-weight: bold;
+            margin-bottom: 20px;
+            display: inline-block;
+        }
+
+        .room-info {
+            background: #f8f9fa;
+            border-radius: 15px;
+            padding: 30px;
+            margin: 20px 0;
+            border: 2px solid #e9ecef;
+        }
+
+        .room-code {
             font-size: 3rem;
             font-weight: bold;
-            padding: 30px;
-            border-radius: 15px;
+            color: #667eea;
             letter-spacing: 10px;
             margin: 20px 0;
-            text-shadow: 2px 2px 4px rgba(0,0,0,0.2);
-            min-height: 100px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
+            font-family: 'Courier New', monospace;
         }
 
-        .status {
+        .room-label {
+            color: #666;
+            font-size: 1.1rem;
+            margin-bottom: 10px;
+        }
+
+        .waiting-state {
+            color: #ff6b6b;
             font-size: 1.2rem;
-            color: #555;
             margin: 20px 0;
         }
 
-        .waiting {
-            color: #ff6b6b;
+        .connected-state {
+            color: #51cf66;
+            font-size: 1.2rem;
+            margin: 20px 0;
         }
 
-        .connected {
-            color: #51cf66;
+        .receiving-state {
+            color: #4facfe;
+            font-size: 1.2rem;
+            margin: 20px 0;
+        }
+
+        .progress-container {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 20px;
+            margin: 20px 0;
+            display: none;
         }
 
         .progress-bar {
-            background: #f0f0f0;
+            background: #e0e0e0;
             border-radius: 10px;
             height: 20px;
             overflow: hidden;
-            margin: 20px 0;
-            display: none;
+            margin: 10px 0;
         }
 
         .progress-fill {
@@ -85,8 +114,34 @@
             transition: width 0.3s ease;
         }
 
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+            gap: 15px;
+            margin: 15px 0;
+        }
+
+        .stat-item {
+            background: white;
+            padding: 10px;
+            border-radius: 8px;
+            text-align: center;
+        }
+
+        .stat-value {
+            font-size: 1.2rem;
+            font-weight: bold;
+            color: #333;
+        }
+
+        .stat-label {
+            font-size: 0.8rem;
+            color: #666;
+            margin-top: 2px;
+        }
+
         .file-info {
-            background: #f8f9fa;
+            background: #e8f4f8;
             border-radius: 10px;
             padding: 15px;
             margin: 20px 0;
@@ -103,31 +158,138 @@
             color: #666;
             font-size: 0.9rem;
         }
+
+        .download-section {
+            margin: 20px 0;
+            display: none;
+        }
+
+        .download-btn {
+            background: linear-gradient(135deg, #51cf66 0%, #00b894 100%);
+            color: white;
+            border: none;
+            padding: 15px 30px;
+            font-size: 1.1rem;
+            border-radius: 10px;
+            cursor: pointer;
+            margin: 10px;
+            transition: all 0.3s ease;
+            font-weight: 600;
+        }
+
+        .download-btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(81, 207, 102, 0.3);
+        }
+
+        .error {
+            background: #ffe4e1;
+            color: #ff6b6b;
+            padding: 15px;
+            border-radius: 10px;
+            margin: 20px 0;
+            display: none;
+        }
+
+        .copy-btn {
+            background: transparent;
+            border: 2px solid #667eea;
+            color: #667eea;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.9rem;
+            margin: 10px 0;
+        }
+
+        .copy-btn:hover {
+            background: #667eea;
+            color: white;
+        }
+
+        .advanced-settings {
+            background: #f8f9fa;
+            border-radius: 10px;
+            padding: 15px;
+            margin: 20px 0;
+            text-align: left;
+        }
+
+        .setting-item {
+            margin: 10px 0;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .setting-item label {
+            margin: 0;
+            font-size: 0.9rem;
+        }
+
+        .setting-item input {
+            width: 80px;
+            padding: 5px;
+            font-size: 0.9rem;
+        }
     </style>
 </head>
 <body>
     <div class="container">
-        <h1 class="title">📁 Fast Transfer</h1>
-        <p class="subtitle">サーバー側 - ファイル受信準備完了</p>
+        <h1 class="title">📥 Fast Transfer V2</h1>
+        <div class="v2-badge">100GB対応・階層チャンク受信</div>
+        <p class="subtitle">サーバー側 - 超高速ファイル受信</p>
 
-        <div class="otp-display" id="otpDisplay">
-            準備中...
+        <div class="room-info">
+            <div class="room-label">🔑 このルームコードをクライアントに伝えてください</div>
+            <div class="room-code" id="roomCode">----</div>
+            <button class="copy-btn" id="copyBtn">📋 コードをコピー</button>
         </div>
 
         <div class="status" id="status">
-            <span class="waiting">🔄 サーバー接続中...</span>
-        </div>
-
-        <div class="progress-bar" id="progressBar">
-            <div class="progress-fill" id="progressFill"></div>
+            <span class="waiting-state">⏳ クライアントの接続を待機中...</span>
         </div>
 
         <div class="file-info" id="fileInfo">
             <div class="file-name" id="fileName"></div>
             <div class="file-size" id="fileSize"></div>
         </div>
+
+        <div class="progress-container" id="progressContainer">
+            <h3>📊 受信進捗</h3>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progressFill"></div>
+            </div>
+            <div id="progressText">0%</div>
+
+            <div class="stats-grid">
+                <div class="stat-item">
+                    <div class="stat-value" id="mainChunksCompleted">0</div>
+                    <div class="stat-label">メインチャンク</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="subChunksCompleted">0</div>
+                    <div class="stat-label">サブチャンク</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="receiveSpeed">0 MB/s</div>
+                    <div class="stat-label">受信速度</div>
+                </div>
+                <div class="stat-item">
+                    <div class="stat-value" id="failedChunks">0</div>
+                    <div class="stat-label">失敗チャンク</div>
+                </div>
+            </div>
+        </div>
+
+        <div class="download-section" id="downloadSection">
+            <button class="download-btn" id="downloadBtn">💾 ファイルをダウンロード</button>
+        </div>
+
+        <div class="error" id="error"></div>
     </div>
 
+    <script src="chunk-manager.js"></script>
     <script src="webrtc.js"></script>
     <script src="server.js"></script>
 </body>
