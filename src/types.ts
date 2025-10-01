@@ -29,16 +29,18 @@ export type ControlMessage = {
     totalMainChunks: number;
     totalSubChunks: number;
 } | {
-    type: 'chunk-data';
+    type: 'chunk-metadata'; // 天才的な軽量メタデータ
     chunkId: string;
     mainChunkId: string;
-    size: number;
     checksum: string;
-    data: string;
+    index: number;
 } | {
     type: 'chunk-ack';
     chunkId: string;
     success: boolean;
+} | {
+    type: 'chunk-nack'; // 天才的な再送要求
+    missingIndexes: number[];
 } | {
     type: 'transfer-complete';
 } | {
@@ -120,6 +122,7 @@ export interface WebRTCManagerV2 {
     dataChannel: RTCDataChannel | null;
     chunkManager: any;
     receiveManager: any;
+    isHost: boolean;
     maxConcurrentSends: number;
     BUFFER_THRESHOLD: number;
     adaptiveChunkSize: number;

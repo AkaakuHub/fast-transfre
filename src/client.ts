@@ -282,7 +282,17 @@ class ClientManagerV2 {
                        this.roomCode &&
                        this.roomCode.length === 4 &&
                        this.webrtc.pc &&
-                       this.webrtc.pc.connectionState === 'connected';
+                       (this.webrtc.pc.connectionState === 'connected' || this.webrtc.pc.connectionState === 'connecting') &&
+                       this.webrtc.dataChannel &&
+                       this.webrtc.dataChannel.readyState === 'open';
+
+        console.log('🔍 送信ボタン状態チェック:', {
+            selectedFiles: this.selectedFiles.length,
+            roomCode: this.roomCode,
+            connectionState: this.webrtc.pc?.connectionState,
+            dataChannelState: this.webrtc.dataChannel?.readyState,
+            canSend: canSend
+        });
 
         sendBtn.disabled = !canSend;
     }
@@ -337,8 +347,10 @@ class ClientManagerV2 {
             const errorMessage = error instanceof Error ? error.message : 'Unknown error';
             this.showError('V2ファイル送信エラー: ' + errorMessage);
         } finally {
-            sendBtn.disabled = false;
             sendBtn.textContent = '🚀 高速送信開始';
+
+            // 送信ボタンの状態を更新
+            this.updateSendButton();
 
             // すべてのファイル送信完了
             if (this.selectedFiles.length === 0 && this.completedFiles.length > 0) {
@@ -480,6 +492,11 @@ class ClientManagerV2 {
         this.webrtc.onDisconnected = () => {
             this.updateSendButton();
         };
+
+        // 5秒ごとに送信ボタン状態を更新（DataChannel状態変化対応）
+        setInterval(() => {
+            this.updateSendButton();
+        }, 5000);
 
         // サーバー送信メソッド設定
         this.webrtc.sendToServer = (data: ControlMessage | { type: string; candidate: RTCIceCandidate }) => {

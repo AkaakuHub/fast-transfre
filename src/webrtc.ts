@@ -1,10 +1,9 @@
-interface ChunkMessage {
-    type: 'chunk-data';
+interface ChunkMetadataMessage {
+    type: 'chunk-metadata';
     chunkId: string;
     mainChunkId: string;
-    size: number;
     checksum: string;
-    data: string;
+    index: number;
 }
 
 interface FileStartV2Message {
@@ -30,7 +29,12 @@ interface RetryRequestMessage {
     chunkId: string;
 }
 
-type ControlMessage = FileStartV2Message | ChunkMessage | ChunkAckMessage | TransferCompleteMessage | RetryRequestMessage;
+interface ChunkNackMessage {
+    type: 'chunk-nack';
+    missingIndexes: number[];
+}
+
+type ControlMessage = FileStartV2Message | ChunkMetadataMessage | ChunkAckMessage | ChunkNackMessage | TransferCompleteMessage | RetryRequestMessage;
 
 interface FileInfo {
     name: string;
@@ -124,6 +128,7 @@ class WebRTCManagerV2 {
     public dataChannel: RTCDataChannel | null = null;
     public chunkManager: ChunkManager | null = null;
     public receiveManager: any = null;
+    public isHost: boolean = false;
 
     // 転送制御
     public isTransferring: boolean = false;
@@ -132,10 +137,14 @@ class WebRTCManagerV2 {
     public maxConcurrentSends: number = 3;
     public activeSends: number = 0;
 
-    // バックプレッシャー制御
-    public BUFFER_THRESHOLD: number = 1024 * 1024; // 1MB
-    public adaptiveChunkSize: number = 16 * 1024; // 動的チャンクサイズ
+    // バックプレッシャー制御 - 天才的なフロー制御用
+    public BUFFER_THRESHOLD: number = 64 * 1024 * 1024; // 64MB - 100GB対応
+    public adaptiveChunkSize: number = 1024 * 1024; // 1MBチャンク - 最適化
     public sendSpeed: number = 100; // ms間隔
+
+    // バッファ管理
+    public bufferReady: boolean = true;
+    public bufferResolve: ((value: void) => void) | null = null;
 
     // 進捗・ステータス
     public onProgress: ((progress: number) => void) | null = null;
@@ -168,6 +177,8 @@ class WebRTCManagerV2 {
      * WebRTC接続初期化
      */
     init(isHost = false) {
+        this.isHost = isHost;
+
         const config = {
             iceServers: [
                 { urls: 'stun:stun.l.google.com:19302' }
@@ -194,12 +205,15 @@ class WebRTCManagerV2 {
     }
 
     /**
-     * DataChannel設定
+     * DataChannelイベント設定
      */
-    setupDataChannel() {
+    setupDataChannelEvents() {
         if (!this.dataChannel) return;
 
         this.dataChannel.binaryType = 'arraybuffer';
+
+        // バックプレッシャー制御用
+        this.dataChannel.bufferedAmountLowThreshold = 1024 * 1024; // 1MB
 
         this.dataChannel.onopen = () => {
             console.log('🔗 WebRTC V2 DataChannel接続確立');
@@ -209,17 +223,44 @@ class WebRTCManagerV2 {
         this.dataChannel.onmessage = async (event) => {
             try {
                 const data = JSON.parse(event.data);
-                await this.handleControlMessage(data);
+                if (data.type === 'file-info') {
+                    // 新しいファイル情報処理
+                    console.log(`📁 ファイル情報受信: ${data.filename} (${this.formatFileSize(data.filesize)})`);
+                    this.updateStatus('receiving', `📁 ${data.filename} を受信中...`);
+
+                    this.receiveManager = {
+                        filename: data.filename,
+                        filesize: data.filesize,
+                        receivedChunks: new Map(),
+                        expectedChunks: new Map(),
+                        completedChunks: new Set(),
+                        totalReceived: 0,
+                        totalMainChunks: 1,
+                        totalSubChunks: Math.ceil(data.filesize / (1024 * 1024))
+                    };
+
+                    if (this.onFileReceiveStart) {
+                        this.onFileReceiveStart(data.filename, data.filesize);
+                    }
+                } else {
+                    await this.handleControlMessage(data);
+                }
             } catch (e) {
-                // バイナリデータ（チャンク）受信 - エラーは無視して続行
-                console.log('バイナリデータ受信:', event.data);
+                // バイナリデータ受信
+                await this.handleDirectBinaryData(event.data);
             }
         };
 
         this.dataChannel.onbufferedamountlow = () => {
-            // バッファが空いたことを通知
-            console.log('📤 送信バッファに空きができました');
-            // バッファ空きを通知（送信処理は並列送信システムで管理）
+            // バッファが空いたことを通知 - 天才的なバックプレッシャー制御
+            console.log('📤 送信バッファに空きができました - 転送を再開');
+            this.bufferReady = true;
+
+            // バッファ空きイベントリスナーに通知
+            if (this.bufferResolve) {
+                this.bufferResolve();
+                this.bufferResolve = null;
+            }
         };
 
         this.dataChannel.onerror = (error) => {
@@ -230,7 +271,16 @@ class WebRTCManagerV2 {
         this.dataChannel.onclose = () => {
             console.log('🔌 DataChannel切断');
             this.updateStatus('disconnected', '❌ 接続が切断されました');
+            // DataChannelはnullにせず、切断状態のまま保持
+            // 次回使用時に再接続処理を行う
         };
+    }
+
+    /**
+     * DataChannel設定
+     */
+    setupDataChannel() {
+        this.setupDataChannelEvents();
     }
 
     /**
@@ -275,31 +325,39 @@ class WebRTCManagerV2 {
             await this.waitForDataChannelReady();
         }
 
-        if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
-            throw new Error('DataChannelを確立できませんでした');
+        console.log(`📁 ファイル送信開始: ${file.name} (${this.formatFileSize(file.size)})`);
+
+        const CHUNK_SIZE = 1024 * 1024; // 1MB
+        const BUFFER_THRESHOLD = 64 * 1024 * 1024; // 64MB
+        let offset = 0;
+
+        while (offset < file.size) {
+            // バッファが閾値を超えていたら、送信を待機する
+            if (this.dataChannel!.bufferedAmount > BUFFER_THRESHOLD) {
+                console.log(`⏳ バッファ待機: ${this.formatFileSize(this.dataChannel!.bufferedAmount)}`);
+                await new Promise<void>((resolve) => {
+                    // バッファが減ったら再開するためのイベントリスナー
+                    this.dataChannel!.onbufferedamountlow = () => {
+                        console.log('📤 バッファ解放、再開');
+                        resolve();
+                    };
+                });
+                continue; // 待機後、再度ループの先頭から条件をチェック
+            }
+
+            const chunk = file.slice(offset, offset + CHUNK_SIZE);
+            const chunkData = await chunk.arrayBuffer();
+            this.dataChannel!.send(chunkData);
+            offset += chunkData.byteLength;
+
+            console.log(`📤 チャンク送信: ${this.formatFileSize(chunkData.byteLength)} (進捗: ${Math.round((offset / file.size) * 100)}%)`);
+
+            // 進捗更新
+            const progress = (offset / file.size) * 100;
+            if (this.onProgress) this.onProgress(progress);
         }
 
-        console.log(`🚀 V2ファイル送信開始: ${file.name} (${this.formatFileSize(file.size)})`);
-
-        this.chunkManager = new (window as any).ChunkManager(file);
-        this.chunkManager!.startTransfer();
-        this.isTransferring = true;
-        this.activeSends = 0;
-
-        // 進捗を初期化
-        this.updateProgress();
-
-        // ファイル情報送信
-        await this.sendMessage({
-            type: 'file-start-v2',
-            filename: file.name,
-            filesize: file.size,
-            totalMainChunks: this.chunkManager!.mainChunks.length,
-            totalSubChunks: this.chunkManager!.mainChunks.reduce((sum: number, chunk: MainChunk) => sum + chunk.subChunks.length, 0)
-        });
-
-        // メインチャンク転送開始
-        await this.startMainChunkTransfer();
+        console.log('✅ ファイル送信完了');
     }
 
     /**
@@ -325,47 +383,64 @@ class WebRTCManagerV2 {
             console.log(`📦 メインチャンク転送開始: ${this.currentMainChunk.id} (${this.currentMainChunk.subChunks.length}サブチャンク)`);
 
             // サブチャンクを並列送信
-            await this.sendSubChunksParallel(this.currentMainChunk);
+            await this.sendSubChunksSequential(this.currentMainChunk);
 
             // メインチャンクのステータスを更新
             this.currentMainChunk.status = 'completed';
 
             // 進捗更新
-            this.updateProgress();
+            await this.updateProgress();
 
             // 少し待機して次のチャンクへ
             await new Promise(resolve => setTimeout(resolve, 100));
         }
 
         if (this.chunkManager!.isCompleted()) {
-            await this.sendMessage({ type: 'transfer-complete' });
-            console.log('✅ すべてのチャンク転送完了');
-            this.updateStatus('completed', '✅ ファイル転送完了！');
+            try {
+                await this.sendMessage({ type: 'transfer-complete' });
+                console.log('✅ すべてのチャンク転送完了');
+                this.updateStatus('completed', '✅ ファイル転送完了！');
+            } catch (error) {
+                console.warn('⚠️ transfer-complete送信エラー（無視）:', error);
+                // 転送完了メッセージの送信失敗は無視して継続
+            }
         }
 
         this.isTransferring = false;
+
+        // 少し待機してDataChannelを安定させる
+        await new Promise(resolve => setTimeout(resolve, 500));
     }
 
     /**
      * サブチャンクを並列送信
      */
-    async sendSubChunksParallel(mainChunk: MainChunk) {
+    async sendSubChunksSequential(mainChunk: MainChunk) {
         const subChunks = mainChunk.subChunks;
-        const sendPromises = [];
 
+        console.log(`📦 天才的な逐次転送開始: ${mainChunk.id} (${subChunks.length}サブチャンク)`);
+
+        // ドキュメント通りのwhileループで逐次送信
         for (const subChunk of subChunks) {
-            // 並列送信数を制御
-            while (this.activeSends >= this.maxConcurrentSends) {
-                await new Promise(resolve => setTimeout(resolve, 50));
+            // 天才的なバックプレッシャー制御 - ドキュメント通り
+            if (this.dataChannel && this.dataChannel.bufferedAmount > this.BUFFER_THRESHOLD) {
+                console.log(`⏳ 天才的なバックプレッシャー待機: ${this.formatFileSize(this.dataChannel.bufferedAmount)}`);
+                await new Promise<void>((resolve) => {
+                    const originalHandler = this.dataChannel!.onbufferedamountlow;
+                    this.dataChannel!.onbufferedamountlow = () => {
+                        console.log('📤 天才的なバッファ解放検知！');
+                        this.dataChannel!.onbufferedamountlow = originalHandler;
+                        resolve();
+                    };
+                });
             }
 
-            const sendPromise = this.sendSubChunk(subChunk);
-            sendPromises.push(sendPromise);
-            this.activeSends++;
+            // 一つずつ送信（これが天才的な方法）
+            console.log(`🚀 天才的な逐次送信: ${subChunk.id}`);
+            await this.sendSubChunk(subChunk);
         }
 
-        await Promise.all(sendPromises);
-        this.activeSends = 0;
+        console.log(`✅ 天才的なメインチャンク転送完了: ${mainChunk.id}`);
     }
 
     /**
@@ -377,30 +452,45 @@ class WebRTCManagerV2 {
             const chunkData = await this.chunkManager!.getChunkData(subChunk);
             const checksum = await this.chunkManager!.calculateChecksum(chunkData);
 
-            // バックプレッシャーチェック
-            await this.waitForBufferSpace();
+            // ドキュメント通りの天才的バックプレッシャー制御
+            if (this.dataChannel && this.dataChannel.bufferedAmount > this.BUFFER_THRESHOLD) {
+                console.log(`⏳ 天才的なバックプレッシャー待機: ${this.formatFileSize(this.dataChannel.bufferedAmount)}`);
+                await new Promise<void>((resolve) => {
+                    this.dataChannel!.onbufferedamountlow = () => {
+                        console.log('📤 天才的なバッファ解放検知！');
+                        resolve();
+                    };
+                });
+            }
 
-            // チャンクデータをBase64エンコード
-            const base64Data = this.arrayBufferToBase64(chunkData);
+            // 構造化されたチャンクヘッダー + データ（Base64廃止）
+            const header = new ArrayBuffer(8); // 4バイトindex + 4バイトsize
+            const headerView = new DataView(header);
+            headerView.setUint32(0, subChunk.index, true); // little-endian
+            headerView.setUint32(4, chunkData.byteLength, true);
 
-            const chunkMessage: ChunkMessage = {
-                type: 'chunk-data',
+            // 天才的なチャンクメッセージ（制御用） - サイズ大幅削減
+            const controlMessage: ChunkMetadataMessage = {
+                type: 'chunk-metadata',
                 chunkId: subChunk.id,
                 mainChunkId: subChunk.mainChunkId,
-                size: subChunk.size,
                 checksum: checksum,
-                data: base64Data
+                index: subChunk.index
             };
 
-            await this.sendMessage(chunkMessage);
+            // 制御メッセージを送信
+            await this.sendMessage(controlMessage);
+
+            // バイナリデータを直接送信（天才的な方法）
+            await this.sendBinaryData(header, chunkData);
 
             // チャンクマネージャーに完了を通知
             this.chunkManager!.markSubChunkCompleted(subChunk.id, checksum);
 
-            console.log(`📤 サブチャンク送信完了: ${subChunk.id} (${this.formatFileSize(subChunk.size)})`);
+            console.log(`📤 サブチャンク送信完了: ${subChunk.id} (${this.formatFileSize(subChunk.size)}) - バイナリ直接転送`);
 
             // 進捗更新
-            this.updateProgress();
+            await this.updateProgress();
 
         } catch (error) {
             console.error(`❌ サブチャンク送信失敗: ${subChunk.id}`, error);
@@ -426,45 +516,65 @@ class WebRTCManagerV2 {
     }
 
     /**
-     * バッファ空き待機
+     * 天才的なバッファ空き待機 - バックプレッシャー制御
      */
     async waitForBufferSpace() {
         if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
             throw new Error('DataChannelが準備できていません');
         }
 
+        // バッファが閾値を超えている場合、天才的な待機処理
         while (this.dataChannel.bufferedAmount > this.BUFFER_THRESHOLD) {
-            console.log(`⏳ バッファ待機: ${this.formatFileSize(this.dataChannel.bufferedAmount)}`);
+            console.log(`⏳ 天才的なバッファ制御: ${this.formatFileSize(this.dataChannel.bufferedAmount)}/${this.formatFileSize(this.BUFFER_THRESHOLD)}`);
+
+            // バッファ空きをPromiseで待機（イベント駆動）
+            if (this.bufferReady) {
+                this.bufferReady = false;
+                return new Promise<void>((resolve) => {
+                    this.bufferResolve = resolve;
+                });
+            }
+
+            // イベントが来ない場合のフォールバック（100ms待機）
             await new Promise(resolve => setTimeout(resolve, 100));
 
-            // 送信速度調整
+            // 送信速度の動的調整
             this.adjustTransferSpeed();
         }
     }
 
     /**
-     * データを分割送信
+     * 天才的なバイナリデータ統合送信 - ヘッダー+データ一体化
      */
-    async sendDataInChunks(arrayBuffer: ArrayBuffer) {
-        const totalSize = arrayBuffer.byteLength;
-        let offset = 0;
+    async sendBinaryData(header: ArrayBuffer, data: ArrayBuffer) {
+        if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+            throw new Error('DataChannelが準備できていません');
+        }
 
-        while (offset < totalSize) {
-            const chunkSize = Math.min(this.adaptiveChunkSize, totalSize - offset);
-            const chunk = arrayBuffer.slice(offset, offset + chunkSize);
+        try {
+            // ヘッダーとデータを統合したArrayBufferを作成
+            const combinedBuffer = new ArrayBuffer(header.byteLength + data.byteLength);
+            const combinedView = new Uint8Array(combinedBuffer);
 
-            try {
-                this.dataChannel!.send(chunk);
-                offset += chunkSize;
-            } catch (error) {
-                if (error instanceof Error && error.message.includes('send queue is full')) {
-                    console.log('⚠️ 送信キュー満杯、待機して再試行');
-                    await new Promise(resolve => setTimeout(resolve, 200));
-                    await this.waitForBufferSpace();
-                    // 再試行（offsetは進めない）
-                } else {
-                    throw error;
-                }
+            // ヘッダーを先頭に配置
+            combinedView.set(new Uint8Array(header), 0);
+            // データをヘッダーの後に配置
+            combinedView.set(new Uint8Array(data), header.byteLength);
+
+            // 統合されたデータを一度に送信（これが天才的な方法）
+            this.dataChannel.send(combinedBuffer);
+
+            console.log(`🚀 天才的な統合バイナリ送信完了: ヘッダー8B + データ${this.formatFileSize(data.byteLength)}`);
+        } catch (error) {
+            console.error('❌ 統合バイナリ送信エラー:', error);
+
+            if (error instanceof Error && error.message.includes('send queue is full')) {
+                console.log('⚠️ 送信キュー満杯、バックプレッシャー制御発動');
+                await this.waitForBufferSpace();
+                // 再試行
+                await this.sendBinaryData(header, data);
+            } else {
+                throw error;
             }
         }
     }
@@ -506,9 +616,80 @@ class WebRTCManagerV2 {
     }
 
     /**
+     * DataChannelを再確立
+     */
+    async recreateDataChannel(): Promise<void> {
+        if (!this.pc) {
+            throw new Error('PeerConnectionが存在しません');
+        }
+
+        console.log('🔄 DataChannel再接続開始...');
+
+        // 既存のDataChannelがあればクローズ
+        if (this.dataChannel) {
+            this.dataChannel.close();
+            this.dataChannel = null;
+        }
+
+        // WebRTC仕様：DataChannel作成側のみが再作成可能
+        if (this.isHost) {
+            // ホスト側：DataChannelを再作成
+            console.log('📡 ホストとしてDataChannelを再作成');
+            this.dataChannel = this.pc.createDataChannel('fileTransfer-v2', {
+                ordered: true,
+                maxRetransmits: 10,
+                maxPacketLifeTime: 3000 // 3秒
+            });
+            this.setupDataChannelEvents();
+
+            // 開くのを待機
+            await new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('タイムアウト')), 10000);
+                if (this.dataChannel) {
+                    this.dataChannel.onopen = () => {
+                        clearTimeout(timeout);
+                        console.log('✅ DataChannel再接続完了');
+                        resolve();
+                    };
+                }
+            });
+        } else {
+            // クライアント側：ホストのDataChannel接続を待つ
+            console.log('⏳ クライアントとしてDataChannel接続を待機');
+            await new Promise<void>((resolve, reject) => {
+                const timeout = setTimeout(() => reject(new Error('タイムアウト')), 15000);
+
+                const onDataChannel = (event: RTCDataChannelEvent) => {
+                    console.log('📡 ホストからのDataChannelを受信');
+                    this.dataChannel = event.channel;
+                    this.setupDataChannelEvents();
+
+                    if (this.dataChannel) {
+                        this.dataChannel.onopen = () => {
+                            clearTimeout(timeout);
+                            this.pc!.removeEventListener('datachannel', onDataChannel);
+                            console.log('✅ DataChannel接続完了');
+                            resolve();
+                        };
+                    }
+                };
+
+                this.pc!.addEventListener('datachannel', onDataChannel);
+            });
+        }
+    }
+
+    /**
      * DataChannelが準備できるまで待機
      */
     async waitForDataChannelReady(): Promise<void> {
+        // DataChannelが存在しないか閉じている場合は再確立
+        if (!this.dataChannel || this.dataChannel.readyState === 'closed') {
+            console.log('🔄 DataChannel再確立が必要です');
+            await this.recreateDataChannel();
+            return;
+        }
+
         return new Promise((resolve, reject) => {
             if (this.dataChannel && this.dataChannel.readyState === 'open') {
                 resolve();
@@ -539,34 +720,98 @@ class WebRTCManagerV2 {
     }
 
     /**
-     * 制御メッセージ送信
+     * 天才的な制御メッセージ送信
      */
-    async sendMessage(data: ControlMessage | ChunkMessage) {
+    async sendMessage(data: ControlMessage) {
         try {
+            // DataChannelが存在しない、または閉じている場合は再接続
             if (!this.dataChannel || this.dataChannel.readyState !== 'open') {
+                console.log('🔄 DataChannel再接続が必要です');
                 await this.waitForDataChannelReady();
             }
             this.dataChannel!.send(JSON.stringify(data));
         } catch (error) {
             console.error('❌ メッセージ送信失敗:', error);
+            // 送信失敗時はDataChannelをクリアして次回再接続
+            this.dataChannel = null;
             throw error;
         }
     }
 
     /**
-     * 制御メッセージ受信処理
+     * 天才的なACK処理
      */
-    async handleControlMessage(data: ControlMessage | ChunkMessage) {
+    async handleChunkAck(data: ChunkAckMessage) {
+        console.log(`✅ 天才的なACK受信: ${data.chunkId}`);
+
+        // ACKに基づいて送信管理を更新
+        if (this.chunkManager) {
+            // チャンクマネージャーにACKを通知
+            this.chunkManager.markSubChunkCompleted(data.chunkId, 'ack-received');
+
+            // 進捗更新
+            await this.updateProgress();
+        }
+    }
+
+    /**
+     * 天才的なNACK処理
+     */
+    async handleChunkNack(data: ChunkNackMessage) {
+        console.log(`❌ 天才的なNACK受信: ${data.missingIndexes.length}個のチャンク再送要求`);
+
+        if (!this.chunkManager) return;
+
+        // 欠損チャンクの再送
+        for (const index of data.missingIndexes) {
+            // 対応するサブチャンクを検索して再送
+            const subChunk = this.findSubChunkByIndex(index);
+            if (subChunk) {
+                console.log(`🔄 天才的なチャンク再送: ${subChunk.id} (index: ${index})`);
+                await this.sendSubChunk(subChunk);
+            }
+        }
+    }
+
+    /**
+     * インデックスからサブチャンクを検索
+     */
+    findSubChunkByIndex(index: number): SubChunk | null {
+        if (!this.chunkManager) return null;
+
+        // 全メインチャンクを検索
+        for (const mainChunk of this.chunkManager.mainChunks) {
+            // 全サブチャンクを検索
+            for (const subChunk of mainChunk.subChunks) {
+                if (subChunk.index === index) {
+                    return subChunk;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * 天才的な制御メッセージ受信処理
+     */
+    async handleControlMessage(data: ControlMessage) {
         switch (data.type) {
             case 'file-start-v2':
                 await this.handleFileStart(data);
                 break;
-            case 'chunk-data':
-                await this.handleChunkDataMessage(data);
+            case 'chunk-metadata':
+                await this.handleChunkMetadata(data);
                 break;
             case 'chunk-ack':
-                // ACK受信処理（送信側）
+                // 天才的なACK受信処理（送信側）
                 console.log('✅ チャンクACK受信:', data.chunkId);
+                await this.handleChunkAck(data);
+                break;
+            case 'chunk-nack':
+                // 天才的なNACK受信処理（送信側）
+                console.log('❌ チャンクNACK受信:', data.missingIndexes);
+                await this.handleChunkNack(data);
                 break;
             case 'transfer-complete':
                 await this.handleTransferComplete();
@@ -582,11 +827,10 @@ class WebRTCManagerV2 {
      */
     async handleFileStart(data: FileStartV2Message) {
         console.log(`📁 ファイル受信開始: ${data.filename} (${this.formatFileSize(data.filesize)})`);
-        console.log(`📊 チャンク情報: ${data.totalMainChunks}メイン, ${data.totalSubChunks}サブ`);
 
         this.updateStatus('receiving', `📁 ${data.filename} を受信中...`);
 
-        // 受信側チャンクマネージャー初期化
+        // シンプルな受信管理
         this.receiveManager = {
             filename: data.filename,
             filesize: data.filesize,
@@ -594,34 +838,58 @@ class WebRTCManagerV2 {
             expectedChunks: new Map(),
             completedChunks: new Set(),
             totalReceived: 0,
-            totalMainChunks: data.totalMainChunks,
-            totalSubChunks: data.totalSubChunks
+            totalMainChunks: 1,
+            totalSubChunks: Math.ceil(data.filesize / (1024 * 1024))
         };
-
-        this.receiveStartTime = Date.now();
-        this.lastBytesReceived = 0;
-        this.lastProgressUpdate = Date.now();
 
         // ファイル受信開始を通知
         if (this.onFileReceiveStart) {
             this.onFileReceiveStart(data.filename, data.filesize);
         }
-
-        // 初期統計を送信
-        this.updateProgress(0);
     }
 
     /**
-     * チャンクデータ受信処理
+     * 天才的なチャンクメタデータ受信処理
      */
-    async handleChunkDataMessage(data: ChunkMessage) {
-        console.log(`📋 チャンクデータ受信: ${data.chunkId} (${this.formatFileSize(data.size)})`);
+    async handleChunkMetadata(data: ChunkMetadataMessage) {
+        console.log(`📋 チャンクメタデータ受信: ${data.chunkId} (index: ${data.index})`);
 
-        // Base64データをArrayBufferにデコード
-        const chunkData = this.base64ToArrayBuffer(data.data);
+        // 受信マネージャーにメタデータを保存
+        if (!this.receiveManager) {
+            console.error('❌ 受信マネージャーが初期化されていません');
+            return;
+        }
 
-        // チャンクデータを直接処理
-        await this.processChunkData(data.chunkId, data.checksum, chunkData);
+        this.receiveManager.expectedChunks.set(data.chunkId, {
+            id: data.chunkId,
+            mainChunkId: data.mainChunkId,
+            index: data.index,
+            checksum: data.checksum,
+            received: false
+        });
+    }
+
+    /**
+     * ドキュメント通りの直接バイナリ受信 - シンプルイズベスト！
+     */
+    async handleDirectBinaryData(data: ArrayBuffer) {
+        if (!this.receiveManager) return;
+
+        // ドキュメント通り：データをそのまま追加！ヘッダー不要！インデックス不要！
+        this.receiveManager.receivedChunks.set(`chunk_${this.receiveManager.receivedChunks.size}`, data);
+        this.receiveManager.totalReceived += data.byteLength;
+
+        console.log(`🔥 ドキュメント通りの直接受信: ${this.formatFileSize(data.byteLength)}`);
+
+        // 進捗更新
+        const progress = (this.receiveManager.totalReceived / this.receiveManager.filesize) * 100;
+        if (this.onProgress) this.onProgress(progress);
+
+        // ドキュメント通り：ファイル受信完了検出
+        if (this.receiveManager.totalReceived >= this.receiveManager.filesize) {
+            console.log('🎉 ドキュメント通りのファイル受信完了！');
+            await this.reconstructReceivedFileSimple();
+        }
     }
 
     /**
@@ -720,6 +988,48 @@ class WebRTCManagerV2 {
     }
 
     /**
+     * ドキュメント通りのシンプルファイル再構築
+     */
+    async reconstructReceivedFileSimple() {
+        if (!this.receiveManager) return;
+
+        console.log('🔧 ドキュメント通りのシンプルファイル再構築開始...');
+
+        try {
+            // 総ファイルサイズでArrayBufferを確保
+            const totalSize = this.receiveManager.filesize;
+            const combinedBuffer = new ArrayBuffer(totalSize);
+            const combinedView = new Uint8Array(combinedBuffer);
+
+            let offset = 0;
+            // ドキュメント通り：受信した順番で結合！インデックス不要！
+            for (const [chunkId, chunkData] of this.receiveManager.receivedChunks) {
+                const chunkView = new Uint8Array(chunkData);
+                combinedView.set(chunkView, offset);
+                offset += chunkView.length;
+                console.log(`📦 ドキュメント通りのチャンク結合: ${chunkId}, 位置 ${offset}`);
+            }
+
+            console.log('✅ ドキュメント通りのファイル再構築完了！');
+
+            // ファイルオブジェクトを作成してコールバック実行
+            if (this.onFileReceived) {
+                this.onFileReceived({
+                    name: this.receiveManager.filename,
+                    size: this.receiveManager.filesize,
+                    data: combinedBuffer
+                });
+            }
+
+            this.updateStatus('completed', `✅ ${this.receiveManager.filename} 受信完了！`);
+
+        } catch (error) {
+            console.error('❌ ドキュメント通りのファイル再構築エラー:', error);
+            this.updateStatus('error', '❌ ファイル再構築エラー');
+        }
+    }
+
+    /**
      * 転送完了処理
      */
     async handleTransferComplete() {
@@ -752,7 +1062,7 @@ class WebRTCManagerV2 {
     /**
      * 進捗更新
      */
-    updateProgress(progress: number | null = null) {
+    async updateProgress(progress: number | null = null) {
         // 送信側の統計
         if (this.chunkManager) {
             const stats = this.chunkManager.getStats();
@@ -769,12 +1079,12 @@ class WebRTCManagerV2 {
                 this.onStatsUpdate(stats);
             }
         }
-        // 受信側の統計
+        // 天才的な受信側統計
         else if (this.receiveManager) {
             const stats = this.getReceiveStats();
             progress = stats.progress.percentage;
 
-            console.log('📊 受信側統計更新:', {
+            console.log('📊 天才的な受信側統計更新:', {
                 progress: progress?.toFixed(1) + '%',
                 mainChunks: `${stats.mainChunksCompleted}/${stats.totalMainChunks}`,
                 subChunks: `${stats.chunksCompleted}/${stats.totalChunks}`
@@ -782,6 +1092,12 @@ class WebRTCManagerV2 {
 
             if (this.onStatsUpdate) {
                 this.onStatsUpdate(stats);
+            }
+
+            // 天才的な転送完了検出 - 構造化プロトコル
+            if (this.receiveManager.receivedChunks.size === this.receiveManager.totalSubChunks) {
+                console.log('🎯 天才的な転送完了！全チャンク受信完了 - ファイル再構築開始');
+                await this.reconstructReceivedFileSimple();
             }
         }
 
